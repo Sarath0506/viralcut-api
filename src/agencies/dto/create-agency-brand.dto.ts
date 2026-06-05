@@ -1,0 +1,15 @@
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
+
+export class CreateAgencyBrandDto {
+  @ApiProperty({ example: "boAt Lifestyle" })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  companyName!: string;
+
+  @ApiPropertyOptional({ example: "owner@brand.in" })
+  @IsOptional()
+  @IsEmail()
+  contactEmail?: string;
+}

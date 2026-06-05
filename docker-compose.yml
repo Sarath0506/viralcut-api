@@ -1,0 +1,16 @@
+# Standalone Postgres for viralcut-api local development (after repo split).
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: viralcut
+      POSTGRES_PASSWORD: viralcut
+      POSTGRES_DB: viralcut
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
