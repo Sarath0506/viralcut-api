@@ -14,7 +14,7 @@
 
 [build]
 builder = "NIXPACKS"
-buildCommand = "pnpm install --frozen-lockfile && pnpm prisma:generate && pnpm build"
+buildCommand = "pnpm install --frozen-lockfile --prod=false && pnpm prisma:generate && pnpm build"
 
 [deploy]
 startCommand = "pnpm prisma:migrate:deploy && pnpm start"
