@@ -8,13 +8,13 @@ import { validateEnv } from "./config/env";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { TransformInterceptor } from "./common/interceptors/transform.interceptor";
 import { AccessModule } from "./access/access.module";
-import { AgenciesModule } from "./agencies/agencies.module";
+import { AdminModule } from "./admin/admin.module";
 import { AuthModule } from "./auth/auth.module";
-import { BrandsModule } from "./brands/brands.module";
 import { CampaignsModule } from "./campaigns/campaigns.module";
 import { HealthModule } from "./health/health.module";
 import { PayoutsModule } from "./payouts/payouts.module";
 import { CreatorModule } from "./creator/creator.module";
+import { RealtimeModule } from "./realtime/realtime.module";
 import { SubmissionsModule } from "./submissions/submissions.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { UsersModule } from "./users/users.module";
@@ -48,9 +48,9 @@ import { WalletModule } from "./wallet/wallet.module";
     ]),
     PrismaModule,
     AccessModule,
+    RealtimeModule,
     AuthModule,
-    AgenciesModule,
-    BrandsModule,
+    AdminModule,
     UsersModule,
     WalletModule,
     PayoutsModule,

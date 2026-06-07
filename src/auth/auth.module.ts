@@ -1,11 +1,12 @@
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtModule } from "@nestjs/jwt";
 import { PassportModule } from "@nestjs/passport";
 
 import type { Env } from "../config/env";
 import { NotificationsModule } from "../notifications/notifications.module";
-import { BrandInviteService } from "./brand-invite.service";
+import { RealtimeModule } from "../realtime/realtime.module";
+import { CampaignInviteService } from "./campaign-invite.service";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { FixedOtpService } from "./fixed-otp.service";
@@ -22,15 +23,16 @@ import { OtpService } from "./otp.service";
       }),
     }),
     NotificationsModule,
+    forwardRef(() => RealtimeModule),
   ],
   controllers: [AuthController],
   providers: [
     AuthService,
-    BrandInviteService,
+    CampaignInviteService,
     OtpService,
     FixedOtpService,
     JwtStrategy,
   ],
-  exports: [AuthService, BrandInviteService, JwtModule],
+  exports: [AuthService, CampaignInviteService, JwtModule],
 })
 export class AuthModule {}

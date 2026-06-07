@@ -1,10 +1,10 @@
 import { Global, Module } from "@nestjs/common";
 
-import { BrandAccessService } from "./brand-access.service";
+import { CampaignAccessService } from "./campaign-access.service";
 
 @Global()
 @Module({
-  providers: [BrandAccessService],
-  exports: [BrandAccessService],
+  providers: [CampaignAccessService],
+  exports: [CampaignAccessService],
 })
 export class AccessModule {}

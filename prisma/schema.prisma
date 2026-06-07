@@ -1,367 +1,605 @@
-generator client {
-  provider = "prisma-client-js"
-}
-
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
-enum UserRole {
-  creator
-  brand
-  agency
-  admin
-}
-
-enum KycStatus {
-  not_started
-  pending
-  verified
-  rejected
-}
-
-enum CampaignStatus {
-  draft
-  live
-  paused
-  closed
-}
-
-enum SubmissionStatus {
-  draft_submitted
-  under_review
-  approved
-  awaiting_live_link
-  live_tracking
-  payout_pending
-  paid
-  rejected
-}
-
-enum TransactionType {
-  earning_credit
-  withdrawal_debit
-  fee_debit
-  adjustment
-}
-
-enum WithdrawalStatus {
-  pending
-  processing
-  completed
-  failed
-}
-
-enum AgencyBrandStatus {
-  active
-  revoked
-}
-
-enum BrandMembershipRole {
-  owner
-  manager
-  viewer
-}
-
-enum AgencyMembershipRole {
-  owner
-  manager
-  viewer
-}
-
-enum BrandInviteStatus {
-  pending
-  accepted
-  expired
-  revoked
-}
-
-model User {
-  id           String    @id @default(cuid())
-  role         UserRole
-  email        String?   @unique
-  phone        String?   @unique
-  passwordHash String?   @map("password_hash")
-  displayName  String?   @map("display_name")
-  username     String?   @unique
-  /** Demo/test accounts: always verify with this 6-digit code (no WhatsApp). */
-  fixedOtpCode String?   @map("fixed_otp_code") @db.VarChar(6)
-  kycStatus        KycStatus @default(not_started) @map("kyc_status")
-  termsAcceptedAt  DateTime? @map("terms_accepted_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
-
-  brandProfile        BrandProfile?
-  agencyMemberships   AgencyMembership[]
-  brandMemberships    BrandMembership[]
-  brandInvitesSent    BrandInvite[]      @relation("BrandInviteInviter")
-  wallet              Wallet?
-  submissions         Submission[]
-  payoutMethods       PayoutMethod[]
-  withdrawals         Withdrawal[]
-  refreshTokens         RefreshToken[]
-  passwordResetTokens   PasswordResetToken[]
-  campaignsCreated      Campaign[]         @relation("CampaignCreatedBy")
-
-  @@map("users")
-}
-
-model OtpSession {
-  id        String   @id @default(cuid())
-  phone     String
-  codeHash  String   @map("code_hash")
-  expiresAt DateTime @map("expires_at")
-  attempts  Int      @default(0)
-  createdAt DateTime @default(now()) @map("created_at")
-
-  @@index([phone, expiresAt])
-  @@map("otp_sessions")
-}
-
-model RefreshToken {
-  id        String   @id @default(cuid())
-  userId    String   @map("user_id")
-  tokenHash String   @unique @map("token_hash")
-  expiresAt DateTime @map("expires_at")
-  revokedAt DateTime? @map("revoked_at")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("refresh_tokens")
-}
-
-model PasswordResetToken {
-  id        String    @id @default(cuid())
-  userId    String    @map("user_id")
-  tokenHash String    @unique @map("token_hash")
-  expiresAt DateTime  @map("expires_at")
-  usedAt    DateTime? @map("used_at")
-  createdAt DateTime  @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("password_reset_tokens")
-}
-
-model Agency {
-  id          String   @id @default(cuid())
-  companyName String   @map("company_name")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  memberships AgencyMembership[]
-  brandLinks  AgencyBrand[]
-  invites     BrandInvite[]
-
-  @@map("agencies")
-}
-
-model AgencyMembership {
-  id        String               @id @default(cuid())
-  agencyId  String               @map("agency_id")
-  userId    String               @map("user_id")
-  role      AgencyMembershipRole @default(owner)
-  createdAt DateTime             @default(now()) @map("created_at")
-
-  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([agencyId, userId])
-  @@index([userId])
-  @@map("agency_memberships")
-}
-
-model BrandProfile {
-  id          String   @id @default(cuid())
-  userId      String?  @unique @map("user_id")
-  companyName String   @map("company_name")
-  logoUrl     String?  @map("logo_url")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  user            User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
-  campaigns       Campaign[]
-  memberships     BrandMembership[]
-  agencyLink      AgencyBrand?
-  invites         BrandInvite[]
-
-  @@map("brand_profiles")
-}
-
-model AgencyBrand {
-  id             String            @id @default(cuid())
-  agencyId       String            @map("agency_id")
-  brandProfileId String            @unique @map("brand_profile_id")
-  status         AgencyBrandStatus @default(active)
-  createdAt      DateTime          @default(now()) @map("created_at")
-  updatedAt      DateTime          @updatedAt @map("updated_at")
-
-  agency       Agency       @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  brandProfile BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
-
-  @@index([agencyId, status])
-  @@map("agency_brands")
-}
-
-model BrandMembership {
-  id             String              @id @default(cuid())
-  brandProfileId String              @map("brand_profile_id")
-  userId         String              @map("user_id")
-  role           BrandMembershipRole @default(owner)
-  createdAt      DateTime            @default(now()) @map("created_at")
-
-  brandProfile BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([brandProfileId, userId])
-  @@index([userId])
-  @@map("brand_memberships")
-}
-
-model BrandInvite {
-  id              String            @id @default(cuid())
-  brandProfileId  String            @map("brand_profile_id")
-  agencyId        String            @map("agency_id")
-  email           String
-  tokenHash       String            @unique @map("token_hash")
-  status          BrandInviteStatus @default(pending)
-  expiresAt       DateTime          @map("expires_at")
-  acceptedAt      DateTime?         @map("accepted_at")
-  invitedByUserId String            @map("invited_by_user_id")
-  createdAt       DateTime          @default(now()) @map("created_at")
-
-  brandProfile BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
-  agency       Agency       @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  invitedBy    User         @relation("BrandInviteInviter", fields: [invitedByUserId], references: [id], onDelete: Cascade)
-
-  @@index([brandProfileId, status])
-  @@index([email])
-  @@map("brand_invites")
-}
-
-model Campaign {
-  id               String         @id @default(cuid())
-  brandProfileId   String         @map("brand_profile_id")
-  createdByUserId  String?        @map("created_by_user_id")
-  title            String
-  category         String?
-  platform         String         @default("instagram_reel")
-  platforms        String[]       @default([])
-  status           CampaignStatus @default(draft)
-  brief            String         @db.Text
-  briefHook        String?        @map("brief_hook") @db.Text
-  doRules          String?        @map("do_rules") @db.Text
-  avoidRules       String?        @map("avoid_rules") @db.Text
-  sourceAssets     Json?          @map("source_assets")
-  referenceAssets  Json?          @map("reference_assets")
-  coverImageUrl    String?        @map("cover_image_url")
-  productUrl       String?        @map("product_url")
-  ratePer1kPaise   Int            @map("rate_per_1k_paise")
-  maxPayoutPaise   Int            @map("max_payout_paise")
-  budgetPaise      Int            @map("budget_paise")
-  budgetUsedPaise  Int            @default(0) @map("budget_used_paise")
-  startDate        DateTime?      @map("start_date")
-  createdAt        DateTime       @default(now()) @map("created_at")
-  updatedAt        DateTime       @updatedAt @map("updated_at")
-
-  brandProfile BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
-  createdBy    User?        @relation("CampaignCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  submissions  Submission[]
-
-  @@index([status])
-  @@index([brandProfileId])
-  @@map("campaigns")
-}
-
-model Submission {
-  id                 String           @id @default(cuid())
-  campaignId         String           @map("campaign_id")
-  creatorId          String           @map("creator_id")
-  status             SubmissionStatus @default(draft_submitted)
-  mediaType          String           @default("video") @map("media_type")
-  draftDriveUrl      String?          @map("draft_drive_url")
-  draftStorageKey    String?          @map("draft_storage_key")
-  liveReelUrl        String?          @map("live_reel_url")
-  eligibleViews      Int              @default(0) @map("eligible_views")
-  estimatedPaise     Int              @default(0) @map("estimated_paise")
-  rejectionReason    String?          @map("rejection_reason")
-  submittedAt        DateTime         @default(now()) @map("submitted_at")
-  approvedAt         DateTime?        @map("approved_at")
-  liveLinkAt         DateTime?        @map("live_link_at")
-  paidAt             DateTime?        @map("paid_at")
-  updatedAt          DateTime         @updatedAt @map("updated_at")
-
-  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  creator  User     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
-
-  @@index([creatorId, status])
-  @@index([campaignId, status])
-  @@map("submissions")
-}
-
-model Wallet {
-  id             String   @id @default(cuid())
-  userId         String   @unique @map("user_id")
-  availablePaise Int      @default(0) @map("available_paise")
-  pendingPaise   Int      @default(0) @map("pending_paise")
-  lifetimePaise  Int      @default(0) @map("lifetime_paise")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  transactions Transaction[]
-
-  @@map("wallets")
-}
-
-model Transaction {
-  id          String          @id @default(cuid())
-  walletId    String          @map("wallet_id")
-  type        TransactionType
-  amountPaise Int             @map("amount_paise")
-  referenceId String?         @map("reference_id")
-  note        String?
-  createdAt   DateTime        @default(now()) @map("created_at")
-
-  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
-
-  @@index([walletId, createdAt])
-  @@map("transactions")
-}
-
-model PayoutMethod {
-  id            String   @id @default(cuid())
-  userId        String   @map("user_id")
-  type          String
-  label         String
-  accountMasked String   @map("account_masked")
-  isDefault     Boolean  @default(false) @map("is_default")
-  createdAt     DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("payout_methods")
-}
-
-model Withdrawal {
-  id              String           @id @default(cuid())
-  userId          String           @map("user_id")
-  amountPaise     Int              @map("amount_paise")
-  feePaise        Int              @map("fee_paise")
-  netPaise        Int              @map("net_paise")
-  status          WithdrawalStatus @default(pending)
-  payoutMethodId  String?          @map("payout_method_id")
-  idempotencyKey  String?          @unique @map("idempotency_key")
-  createdAt       DateTime         @default(now()) @map("created_at")
-  processedAt     DateTime?        @map("processed_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, status])
-  @@map("withdrawals")
-}
-
+generator client {
+
+  provider = "prisma-client-js"
+
+}
+
+
+
+datasource db {
+
+  provider = "postgresql"
+
+  url      = env("DATABASE_URL")
+
+}
+
+
+
+enum UserRole {
+
+  creator
+
+  brand
+
+  admin
+
+}
+
+
+
+enum KycStatus {
+
+  not_started
+
+  pending
+
+  verified
+
+  rejected
+
+}
+
+
+
+enum CampaignStatus {
+
+  draft
+
+  live
+
+  paused
+
+  closed
+
+}
+
+
+
+enum CampaignWizardStep {
+
+  basics
+
+  brief
+
+  payout
+
+  review
+
+}
+
+
+
+enum CampaignOwnership {
+
+  brand_created
+
+  admin_created
+
+}
+
+
+
+enum CampaignInviteStatus {
+
+  pending
+
+  accepted
+
+  expired
+
+  revoked
+
+}
+
+
+
+enum SubmissionStatus {
+
+  draft_submitted
+
+  under_review
+
+  approved
+
+  awaiting_live_link
+
+  live_tracking
+
+  payout_pending
+
+  paid
+
+  rejected
+
+}
+
+
+
+enum TransactionType {
+
+  earning_credit
+
+  withdrawal_debit
+
+  fee_debit
+
+  adjustment
+
+}
+
+
+
+enum WithdrawalStatus {
+
+  pending
+
+  processing
+
+  completed
+
+  failed
+
+}
+
+
+
+model User {
+
+  id           String    @id @default(cuid())
+
+  role         UserRole
+
+  email        String?   @unique
+
+  phone        String?   @unique
+
+  passwordHash String?   @map("password_hash")
+
+  displayName  String?   @map("display_name")
+
+  username     String?   @unique
+
+  fixedOtpCode String?   @map("fixed_otp_code") @db.VarChar(6)
+
+  kycStatus        KycStatus @default(not_started) @map("kyc_status")
+
+  termsAcceptedAt  DateTime? @map("terms_accepted_at")
+
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+
+
+  brandProfile              BrandProfile?
+
+  wallet                    Wallet?
+
+  submissions               Submission[]
+
+  payoutMethods             PayoutMethod[]
+
+  withdrawals               Withdrawal[]
+
+  refreshTokens             RefreshToken[]
+
+  passwordResetTokens       PasswordResetToken[]
+
+  campaignsCreated          Campaign[]         @relation("CampaignCreatedBy")
+
+  campaignInvitesSent       CampaignInvite[]   @relation("CampaignInviteInviter")
+
+  campaignInvitesAccepted   CampaignInvite[]   @relation("CampaignInviteAcceptor")
+
+
+
+  @@map("users")
+
+}
+
+
+
+model OtpSession {
+
+  id        String   @id @default(cuid())
+
+  phone     String
+
+  codeHash  String   @map("code_hash")
+
+  expiresAt DateTime @map("expires_at")
+
+  attempts  Int      @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+
+
+  @@index([phone, expiresAt])
+
+  @@map("otp_sessions")
+
+}
+
+
+
+model RefreshToken {
+
+  id        String   @id @default(cuid())
+
+  userId    String   @map("user_id")
+
+  tokenHash String   @unique @map("token_hash")
+
+  expiresAt DateTime @map("expires_at")
+
+  revokedAt DateTime? @map("revoked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@map("refresh_tokens")
+
+}
+
+
+
+model PasswordResetToken {
+
+  id        String    @id @default(cuid())
+
+  userId    String    @map("user_id")
+
+  tokenHash String    @unique @map("token_hash")
+
+  expiresAt DateTime  @map("expires_at")
+
+  usedAt    DateTime? @map("used_at")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+
+
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@map("password_reset_tokens")
+
+}
+
+
+
+model BrandProfile {
+
+  id          String   @id @default(cuid())
+
+  userId      String   @unique @map("user_id")
+
+  companyName String   @map("company_name")
+
+  logoUrl     String?  @map("logo_url")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  campaigns Campaign[]
+
+
+
+  @@map("brand_profiles")
+
+}
+
+
+
+model Campaign {
+
+  id               String              @id @default(cuid())
+
+  brandProfileId   String?             @map("brand_profile_id")
+
+  createdByUserId  String?             @map("created_by_user_id")
+
+  ownership        CampaignOwnership   @default(brand_created)
+
+  wizardStep       CampaignWizardStep  @default(basics) @map("wizard_step")
+
+  inviteAcceptedAt DateTime?           @map("invite_accepted_at")
+
+  title            String
+
+  category         String?
+
+  platform         String              @default("instagram_reel")
+
+  platforms        String[]            @default([])
+
+  status           CampaignStatus      @default(draft)
+
+  brief            String              @db.Text
+
+  briefHook        String?             @map("brief_hook") @db.Text
+
+  doRules          String?             @map("do_rules") @db.Text
+
+  avoidRules       String?             @map("avoid_rules") @db.Text
+
+  sourceAssets     Json?               @map("source_assets")
+
+  referenceAssets  Json?               @map("reference_assets")
+
+  coverImageUrl    String?             @map("cover_image_url")
+
+  productUrl       String?             @map("product_url")
+
+  ratePer1kPaise   Int                 @map("rate_per_1k_paise")
+
+  maxPayoutPaise   Int                 @map("max_payout_paise")
+
+  budgetPaise      Int                 @map("budget_paise")
+
+  budgetUsedPaise  Int                 @default(0) @map("budget_used_paise")
+
+  startDate        DateTime?           @map("start_date")
+
+  createdAt        DateTime            @default(now()) @map("created_at")
+
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+
+
+
+  brandProfile BrandProfile?    @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+
+  createdBy    User?            @relation("CampaignCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  submissions  Submission[]
+
+  invites      CampaignInvite[]
+
+
+
+  @@index([status])
+
+  @@index([brandProfileId])
+
+  @@index([ownership])
+
+  @@map("campaigns")
+
+}
+
+
+
+model CampaignInvite {
+
+  id               String               @id @default(cuid())
+
+  campaignId       String               @map("campaign_id")
+
+  email            String
+
+  tokenHash        String               @unique @map("token_hash")
+
+  status           CampaignInviteStatus @default(pending)
+
+  expiresAt        DateTime             @map("expires_at")
+
+  acceptedAt       DateTime?            @map("accepted_at")
+
+  invitedByUserId  String               @map("invited_by_user_id")
+
+  acceptedByUserId String?              @map("accepted_by_user_id")
+
+  createdAt        DateTime             @default(now()) @map("created_at")
+
+
+
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  invitedBy   User     @relation("CampaignInviteInviter", fields: [invitedByUserId], references: [id], onDelete: Cascade)
+
+  acceptedBy  User?    @relation("CampaignInviteAcceptor", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+
+
+  @@index([campaignId, status])
+
+  @@index([email])
+
+  @@map("campaign_invites")
+
+}
+
+
+
+model Submission {
+
+  id                 String           @id @default(cuid())
+
+  campaignId         String           @map("campaign_id")
+
+  creatorId          String           @map("creator_id")
+
+  status             SubmissionStatus @default(draft_submitted)
+
+  mediaType          String           @default("video") @map("media_type")
+
+  draftDriveUrl      String?          @map("draft_drive_url")
+
+  draftStorageKey    String?          @map("draft_storage_key")
+
+  liveReelUrl        String?          @map("live_reel_url")
+
+  eligibleViews      Int              @default(0) @map("eligible_views")
+
+  estimatedPaise     Int              @default(0) @map("estimated_paise")
+
+  rejectionReason    String?          @map("rejection_reason")
+
+  submittedAt        DateTime         @default(now()) @map("submitted_at")
+
+  approvedAt         DateTime?        @map("approved_at")
+
+  liveLinkAt         DateTime?        @map("live_link_at")
+
+  paidAt             DateTime?        @map("paid_at")
+
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  creator  User     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([creatorId, status])
+
+  @@index([campaignId, status])
+
+  @@map("submissions")
+
+}
+
+
+
+model Wallet {
+
+  id             String   @id @default(cuid())
+
+  userId         String   @unique @map("user_id")
+
+  availablePaise Int      @default(0) @map("available_paise")
+
+  pendingPaise   Int      @default(0) @map("pending_paise")
+
+  lifetimePaise  Int      @default(0) @map("lifetime_paise")
+
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  transactions Transaction[]
+
+
+
+  @@map("wallets")
+
+}
+
+
+
+model Transaction {
+
+  id          String          @id @default(cuid())
+
+  walletId    String          @map("wallet_id")
+
+  type        TransactionType
+
+  amountPaise Int             @map("amount_paise")
+
+  referenceId String?         @map("reference_id")
+
+  note        String?
+
+  createdAt   DateTime        @default(now()) @map("created_at")
+
+
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([walletId, createdAt])
+
+  @@map("transactions")
+
+}
+
+
+
+model PayoutMethod {
+
+  id            String   @id @default(cuid())
+
+  userId        String   @map("user_id")
+
+  type          String
+
+  label         String
+
+  accountMasked String   @map("account_masked")
+
+  isDefault     Boolean  @default(false) @map("is_default")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+
+
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@map("payout_methods")
+
+}
+
+
+
+model Withdrawal {
+
+  id              String           @id @default(cuid())
+
+  userId          String           @map("user_id")
+
+  amountPaise     Int              @map("amount_paise")
+
+  feePaise        Int              @map("fee_paise")
+
+  netPaise        Int              @map("net_paise")
+
+  status          WithdrawalStatus @default(pending)
+
+  payoutMethodId  String?          @map("payout_method_id")
+
+  idempotencyKey  String?          @unique @map("idempotency_key")
+
+  createdAt       DateTime         @default(now()) @map("created_at")
+
+  processedAt     DateTime?        @map("processed_at")
+
+
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId, status])
+
+  @@map("withdrawals")
+
+}
+
+

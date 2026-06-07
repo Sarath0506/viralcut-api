@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const UserRoleSchema = z.enum(["creator", "brand", "agency", "admin"]);
+export const UserRoleSchema = z.enum(["creator", "brand", "admin"]);
 export type UserRole = z.infer<typeof UserRoleSchema>;
 
 export const KycStatusSchema = z.enum([
@@ -18,6 +18,28 @@ export const CampaignStatusSchema = z.enum([
   "closed",
 ]);
 export type CampaignStatus = z.infer<typeof CampaignStatusSchema>;
+
+export const CampaignWizardStepSchema = z.enum([
+  "basics",
+  "brief",
+  "payout",
+  "review",
+]);
+export type CampaignWizardStep = z.infer<typeof CampaignWizardStepSchema>;
+
+export const CampaignOwnershipSchema = z.enum([
+  "brand_created",
+  "admin_created",
+]);
+export type CampaignOwnership = z.infer<typeof CampaignOwnershipSchema>;
+
+export const CampaignInviteStatusSchema = z.enum([
+  "pending",
+  "accepted",
+  "expired",
+  "revoked",
+]);
+export type CampaignInviteStatus = z.infer<typeof CampaignInviteStatusSchema>;
 
 /** Server-owned submission state machine */
 export const SubmissionStatusSchema = z.enum([
@@ -56,6 +78,7 @@ export const ApiErrorCodeSchema = z.enum([
   "CONFLICT",
   "RATE_LIMITED",
   "INTERNAL_ERROR",
+  "PUBLISH_BLOCKED_PENDING_INVITE",
 ]);
 export type ApiErrorCode = z.infer<typeof ApiErrorCodeSchema>;
 

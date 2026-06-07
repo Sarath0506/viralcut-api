@@ -7,12 +7,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
-import {
-  AgencyMembershipRole,
-  BrandMembershipRole,
-  User,
-  UserRole,
-} from "@prisma/client";
+import { User, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
 
@@ -22,7 +17,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { EmailService } from "../notifications/email.service";
 import type { AuthJwtPayload, AuthTokens } from "./auth.types";
 import { hashRefreshToken, OtpService } from "./otp.service";
-import type { AgencyLoginDto, AgencyRegisterDto } from "./dto/agency-auth.dto";
+import type { AdminLoginDto } from "./dto/admin-auth.dto";
 import type { BrandLoginDto, BrandRegisterDto } from "./dto/brand-auth.dto";
 import type { CreatorOtpVerifyDto } from "./dto/creator-auth.dto";
 
@@ -51,158 +46,36 @@ export class AuthService {
         passwordHash,
         displayName: dto.displayName?.trim() || dto.companyName,
         termsAcceptedAt: new Date(),
-        brandProfile: {
-          create: { companyName: dto.companyName.trim() },
-        },
       },
-      include: { brandProfile: true },
     });
 
-    if (user.brandProfile) {
-      await this.prisma.$transaction([
-        this.prisma.brandProfile.update({
-          where: { id: user.brandProfile.id },
-          data: { userId: user.id },
-        }),
-        this.prisma.brandMembership.create({
-          data: {
-            brandProfileId: user.brandProfile.id,
-            userId: user.id,
-            role: BrandMembershipRole.owner,
-          },
-        }),
-      ]);
-      await this.prisma.wallet.create({ data: { userId: user.id } });
-    }
+    await this.prisma.$transaction([
+      this.prisma.brandProfile.create({
+        data: {
+          userId: user.id,
+          companyName: dto.companyName.trim(),
+        },
+      }),
+      this.prisma.wallet.create({ data: { userId: user.id } }),
+    ]);
 
     return this.issueTokens(user);
   }
 
-  async registerAgency(dto: AgencyRegisterDto) {
-    const email = dto.email.toLowerCase();
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      throw agencyEmailConflict(existing);
-    }
-
-    const passwordHash = await bcrypt.hash(dto.password, 12);
-    const user = await this.prisma.user.create({
-      data: {
-        role: UserRole.agency,
-        email,
-        passwordHash,
-        displayName: dto.displayName?.trim() || dto.companyName,
-        termsAcceptedAt: new Date(),
-        agencyMemberships: {
-          create: {
-            role: AgencyMembershipRole.owner,
-            agency: {
-              create: { companyName: dto.companyName.trim() },
-            },
-          },
-        },
-      },
-    });
-
-    return this.issueTokens(user);
-  }
-
-  async loginAgency(dto: AgencyLoginDto) {
+  async loginAdmin(dto: AdminLoginDto) {
     const email = dto.email.toLowerCase();
     const user = await this.prisma.user.findUnique({ where: { email } });
 
-    if (!user?.passwordHash) {
-      throw invalidAgencyCredentials();
-    }
-
-    if (user.role === UserRole.creator) {
-      throw new UnauthorizedException({
-        code: "WRONG_PORTAL",
-        message:
-          "This email is registered as a creator. Use the creator app to sign in.",
-      });
-    }
-
-    if (user.role !== UserRole.agency) {
-      throw invalidAgencyCredentials();
+    if (!user?.passwordHash || user.role !== UserRole.admin) {
+      throw invalidAdminCredentials();
     }
 
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
     if (!ok) {
-      throw invalidAgencyCredentials();
+      throw invalidAdminCredentials();
     }
 
     return this.issueTokens(user);
-  }
-
-  async forgotAgencyPassword(email: string): Promise<{ sent: boolean }> {
-    const user = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
-    });
-    if (!user || user.role !== UserRole.agency) {
-      return { sent: true };
-    }
-
-    const resetToken = randomBytes(32).toString("hex");
-    const tokenHash = hashRefreshToken(resetToken);
-    const resetTtlMs = this.passwordResetTtlMs();
-
-    await this.prisma.passwordResetToken.updateMany({
-      where: { userId: user.id, usedAt: null },
-      data: { usedAt: new Date() },
-    });
-
-    await this.prisma.passwordResetToken.create({
-      data: {
-        userId: user.id,
-        tokenHash,
-        expiresAt: new Date(Date.now() + resetTtlMs),
-      },
-    });
-
-    await this.email.sendPasswordResetForRole(user.email!, resetToken, "agency");
-    return { sent: true };
-  }
-
-  async resetAgencyPassword(
-    token: string,
-    password: string,
-  ): Promise<{ reset: boolean }> {
-    const tokenHash = hashRefreshToken(token);
-    const stored = await this.prisma.passwordResetToken.findUnique({
-      where: { tokenHash },
-      include: { user: true },
-    });
-
-    if (
-      !stored ||
-      stored.usedAt ||
-      stored.expiresAt < new Date() ||
-      stored.user.role !== UserRole.agency
-    ) {
-      throw new BadRequestException({
-        code: "VALIDATION_ERROR",
-        message: "Invalid or expired reset link",
-      });
-    }
-
-    const passwordHash = await bcrypt.hash(password, 12);
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: stored.userId },
-        data: { passwordHash },
-      }),
-      this.prisma.passwordResetToken.update({
-        where: { id: stored.id },
-        data: { usedAt: new Date() },
-      }),
-      this.prisma.refreshToken.updateMany({
-        where: { userId: stored.userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      }),
-    ]);
-
-    return { reset: true };
   }
 
   async loginBrand(dto: BrandLoginDto) {
@@ -218,6 +91,13 @@ export class AuthService {
         code: "WRONG_PORTAL",
         message:
           "This email is registered as a creator. Use the creator app to sign in.",
+      });
+    }
+
+    if (user.role === UserRole.admin) {
+      throw new UnauthorizedException({
+        code: "WRONG_PORTAL",
+        message: "Use the admin portal to sign in.",
       });
     }
 
@@ -258,7 +138,7 @@ export class AuthService {
       },
     });
 
-    await this.email.sendPasswordResetForRole(user.email!, resetToken, "brand");
+    await this.email.sendPasswordReset(user.email!, resetToken);
     return { sent: true };
   }
 
@@ -464,6 +344,13 @@ function brandEmailConflict(existing: User): ConflictException {
     });
   }
 
+  if (existing.role === UserRole.admin) {
+    return new ConflictException({
+      code: "CONFLICT",
+      message: "Email already registered",
+    });
+  }
+
   return new ConflictException({
     code: "CONFLICT",
     message: "Email already registered",
@@ -477,29 +364,7 @@ function invalidBrandCredentials(): UnauthorizedException {
   });
 }
 
-function agencyEmailConflict(existing: User): ConflictException {
-  if (existing.role === UserRole.creator) {
-    return new ConflictException({
-      code: "WRONG_PORTAL",
-      message:
-        "This email is registered as a creator account. Use the creator app or a different email.",
-    });
-  }
-
-  if (existing.role === UserRole.agency) {
-    return new ConflictException({
-      code: "CONFLICT",
-      message: "This email already has an agency account. Sign in instead.",
-    });
-  }
-
-  return new ConflictException({
-    code: "CONFLICT",
-    message: "Email already registered",
-  });
-}
-
-function invalidAgencyCredentials(): UnauthorizedException {
+function invalidAdminCredentials(): UnauthorizedException {
   return new UnauthorizedException({
     code: "UNAUTHORIZED",
     message: "Invalid email or password",

@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { CampaignStatus } from "@prisma/client";
+import { CampaignStatus, CampaignWizardStep } from "@prisma/client";
 import { Type } from "class-transformer";
 import {
   ArrayMaxSize,
@@ -58,12 +58,10 @@ export class ReferenceAssetDto {
 }
 
 export class CreateCampaignDto {
-  @ApiPropertyOptional({
-    description: "Required when creating as an agency user",
-  })
+  @ApiPropertyOptional({ enum: CampaignWizardStep })
   @IsOptional()
-  @IsString()
-  brandProfileId?: string;
+  @IsEnum(CampaignWizardStep)
+  wizardStep?: CampaignWizardStep;
 
   @ApiPropertyOptional({ enum: CampaignStatus, default: CampaignStatus.draft })
   @IsOptional()
@@ -72,7 +70,7 @@ export class CreateCampaignDto {
 
   @ApiProperty()
   @IsString()
-  @MinLength(3)
+  @MinLength(1)
   @MaxLength(120)
   title!: string;
 
@@ -138,7 +136,7 @@ export class CreateCampaignDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  @MinLength(20)
+  @MaxLength(10000)
   brief?: string;
 
   @ApiPropertyOptional()
@@ -172,6 +170,11 @@ export class CreateCampaignDto {
 }
 
 export class UpdateCampaignDto {
+  @ApiPropertyOptional({ enum: CampaignWizardStep })
+  @IsOptional()
+  @IsEnum(CampaignWizardStep)
+  wizardStep?: CampaignWizardStep;
+
   @ApiPropertyOptional({ enum: CampaignStatus })
   @IsOptional()
   @IsEnum(CampaignStatus)
@@ -180,7 +183,7 @@ export class UpdateCampaignDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  @MinLength(3)
+  @MinLength(1)
   title?: string;
 
   @ApiPropertyOptional()
@@ -269,4 +272,11 @@ export class UpdateCampaignDto {
   @IsInt()
   @Min(100)
   budgetPaise?: number;
+}
+
+/** Lightweight wizard step save — wizardStep required, other fields optional. */
+export class UpdateCampaignStepDto extends UpdateCampaignDto {
+  @ApiProperty({ enum: CampaignWizardStep })
+  @IsEnum(CampaignWizardStep)
+  declare wizardStep: CampaignWizardStep;
 }

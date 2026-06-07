@@ -5,7 +5,7 @@ import {
 } from "@nestjs/common";
 import { CampaignStatus, SubmissionStatus, UserRole } from "@prisma/client";
 
-import { BrandAccessService } from "../access/brand-access.service";
+import { CampaignAccessService } from "../access/campaign-access.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReviewAction, ReviewSubmissionDto } from "./dto/review-submission.dto";
 import type { CreateSubmissionDto } from "./dto/create-submission.dto";
@@ -19,21 +19,19 @@ function computeEarningsPaise(views: number, ratePer1kPaise: number): number {
 export class SubmissionsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly brandAccess: BrandAccessService,
+    private readonly campaignAccess: CampaignAccessService,
   ) {}
 
   private async resolveBrandProfileIds(
     userId: string,
     role: UserRole,
-    brandProfileId?: string,
-  ): Promise<string[]> {
-    const accessible =
-      await this.brandAccess.listAccessibleBrandProfileIds(userId, role);
-    if (brandProfileId) {
-      await this.brandAccess.assertCanAccessBrand(userId, role, brandProfileId);
-      return [brandProfileId];
+  ): Promise<string[] | null> {
+    if (role === UserRole.admin) {
+      return null;
     }
-    return accessible;
+    const brandProfileId =
+      await this.campaignAccess.getBrandProfileIdForUser(userId);
+    return brandProfileId ? [brandProfileId] : [];
   }
 
   async listForBrand(
@@ -45,18 +43,16 @@ export class SubmissionsService {
       brandProfileId?: string;
     },
   ) {
-    const brandProfileIds = await this.resolveBrandProfileIds(
-      userId,
-      role,
-      filters?.brandProfileId,
-    );
-    if (brandProfileIds.length === 0) {
+    const brandProfileIds = await this.resolveBrandProfileIds(userId, role);
+    if (brandProfileIds && brandProfileIds.length === 0) {
       return [];
     }
 
     const submissions = await this.prisma.submission.findMany({
       where: {
-        campaign: { brandProfileId: { in: brandProfileIds } },
+        ...(brandProfileIds
+          ? { campaign: { brandProfileId: { in: brandProfileIds } } }
+          : {}),
         ...(filters?.status ? { status: filters.status } : {}),
         ...(filters?.campaignId ? { campaignId: filters.campaignId } : {}),
       },
@@ -110,10 +106,10 @@ export class SubmissionsService {
       });
     }
 
-    await this.brandAccess.assertCanAccessBrand(
+    await this.campaignAccess.assertCanAccessCampaign(
       userId,
       role,
-      s.campaign.brandProfileId,
+      s.campaign,
     );
 
     return {
@@ -154,10 +150,10 @@ export class SubmissionsService {
       });
     }
 
-    await this.brandAccess.assertCanAccessBrand(
+    await this.campaignAccess.assertCanAccessCampaign(
       userId,
       role,
-      submission.campaign.brandProfileId,
+      submission.campaign,
     );
 
     if (
@@ -421,13 +417,9 @@ export class SubmissionsService {
   }
 
   /** Brand dashboard stats */
-  async brandStats(userId: string, role: UserRole, brandProfileId?: string) {
-    const brandProfileIds = await this.resolveBrandProfileIds(
-      userId,
-      role,
-      brandProfileId,
-    );
-    if (brandProfileIds.length === 0) {
+  async brandStats(userId: string, role: UserRole) {
+    const brandProfileIds = await this.resolveBrandProfileIds(userId, role);
+    if (brandProfileIds && brandProfileIds.length === 0) {
       return {
         liveCampaigns: 0,
         pendingReviews: 0,
@@ -436,7 +428,9 @@ export class SubmissionsService {
       };
     }
 
-    const brandFilter = { brandProfileId: { in: brandProfileIds } };
+    const brandFilter = brandProfileIds
+      ? { brandProfileId: { in: brandProfileIds } }
+      : {};
 
     const [liveCampaigns, pendingReviews, budgetAgg, viewsAgg] =
       await Promise.all([

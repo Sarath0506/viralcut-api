@@ -27,13 +27,17 @@ import { RolesGuard } from "../common/guards/roles.guard";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { CampaignsService } from "./campaigns.service";
-import { CreateCampaignDto, UpdateCampaignDto } from "./dto/campaign.dto";
+import {
+  CreateCampaignDto,
+  UpdateCampaignDto,
+  UpdateCampaignStepDto,
+} from "./dto/campaign.dto";
 import { ListCampaignsQueryDto } from "./dto/list-campaigns-query.dto";
 
 @ApiTags("campaigns")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.brand, UserRole.agency)
+@Roles(UserRole.brand, UserRole.admin)
 @Controller("campaigns")
 export class CampaignsController {
   constructor(
@@ -89,17 +93,26 @@ export class CampaignsController {
 
   @Get()
   list(@CurrentUser() user: AuthJwtPayload, @Query() query: ListCampaignsQueryDto) {
-    return this.campaigns.listForBrand(user.sub, user.role, query);
+    return this.campaigns.listForUser(user.sub, user.role, query);
   }
 
   @Get(":id")
   get(@CurrentUser() user: AuthJwtPayload, @Param("id") id: string) {
-    return this.campaigns.getForBrand(user.sub, user.role, id);
+    return this.campaigns.getForUser(user.sub, user.role, id);
   }
 
   @Post()
   create(@CurrentUser() user: AuthJwtPayload, @Body() dto: CreateCampaignDto) {
     return this.campaigns.create(user.sub, user.role, dto);
+  }
+
+  @Patch(":id/step")
+  updateStep(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Body() dto: UpdateCampaignStepDto,
+  ) {
+    return this.campaigns.update(user.sub, user.role, id, dto);
   }
 
   @Patch(":id")

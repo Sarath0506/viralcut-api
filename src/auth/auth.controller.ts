@@ -2,16 +2,11 @@ import { Body, Controller, Get, Post, Query } from "@nestjs/common";
 import { ApiOkResponse, ApiTags } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 
-import { BrandInviteService } from "./brand-invite.service";
+import { CampaignInviteService } from "./campaign-invite.service";
 import { AuthService } from "./auth.service";
 import { OtpService } from "./otp.service";
-import {
-  AgencyForgotPasswordDto,
-  AgencyLoginDto,
-  AgencyRegisterDto,
-  AgencyResetPasswordDto,
-} from "./dto/agency-auth.dto";
-import { BrandInviteAcceptDto } from "./dto/brand-invite.dto";
+import { AdminLoginDto } from "./dto/admin-auth.dto";
+import { CampaignInviteAcceptDto } from "./dto/campaign-invite.dto";
 import {
   BrandForgotPasswordDto,
   BrandLoginDto,
@@ -27,7 +22,7 @@ import { AuthResponseDto } from "./dto/auth-response.dto";
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
-    private readonly brandInvites: BrandInviteService,
+    private readonly campaignInvites: CampaignInviteService,
     private readonly otp: OtpService,
   ) {}
 
@@ -43,6 +38,12 @@ export class AuthController {
     return this.auth.loginBrand(dto);
   }
 
+  @Post("admin/login")
+  @ApiOkResponse({ type: AuthResponseDto })
+  loginAdmin(@Body() dto: AdminLoginDto) {
+    return this.auth.loginAdmin(dto);
+  }
+
   @Post("brand/forgot-password")
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   forgotPassword(@Body() dto: BrandForgotPasswordDto) {
@@ -55,40 +56,16 @@ export class AuthController {
     return this.auth.resetBrandPassword(dto.token, dto.password);
   }
 
-  @Post("agency/register")
-  @ApiOkResponse({ type: AuthResponseDto })
-  registerAgency(@Body() dto: AgencyRegisterDto) {
-    return this.auth.registerAgency(dto);
-  }
-
-  @Post("agency/login")
-  @ApiOkResponse({ type: AuthResponseDto })
-  loginAgency(@Body() dto: AgencyLoginDto) {
-    return this.auth.loginAgency(dto);
-  }
-
-  @Post("agency/forgot-password")
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  forgotAgencyPassword(@Body() dto: AgencyForgotPasswordDto) {
-    return this.auth.forgotAgencyPassword(dto.email);
-  }
-
-  @Post("agency/reset-password")
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  resetAgencyPassword(@Body() dto: AgencyResetPasswordDto) {
-    return this.auth.resetAgencyPassword(dto.token, dto.password);
-  }
-
-  @Get("brand-invite/preview")
+  @Get("campaign-invite/preview")
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  previewBrandInvite(@Query("token") token: string) {
-    return this.brandInvites.preview(token ?? "");
+  previewCampaignInvite(@Query("token") token: string) {
+    return this.campaignInvites.preview(token ?? "");
   }
 
-  @Post("brand-invite/accept")
+  @Post("campaign-invite/accept")
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  acceptBrandInvite(@Body() dto: BrandInviteAcceptDto) {
-    return this.brandInvites.accept(dto);
+  acceptCampaignInvite(@Body() dto: CampaignInviteAcceptDto) {
+    return this.campaignInvites.accept(dto);
   }
 
   @Post("creator/otp/request")
