@@ -33,6 +33,8 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === "true" || v === "1"),
+  /** Resend HTTP API key (preferred on Railway; same `re_...` key as SMTP password). */
+  RESEND_API_KEY: z.string().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(465),
   SMTP_USER: z.string().optional(),

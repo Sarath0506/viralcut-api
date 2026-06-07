@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
 import { formatDurationLabel } from "../common/parse-duration";
 import type { Env } from "../config/env";
@@ -8,16 +9,27 @@ import type { Env } from "../config/env";
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
+  private resendClient: Resend | null = null;
 
   constructor(private readonly config: ConfigService<Env, true>) {}
 
-  isConfigured(): boolean {
+  private usesResendApi(): boolean {
+    return Boolean(
+      this.config.get("RESEND_API_KEY") && this.config.get("EMAIL_FROM"),
+    );
+  }
+
+  private usesSmtp(): boolean {
     return Boolean(
       this.config.get("SMTP_HOST") &&
         this.config.get("SMTP_USER") &&
         this.config.get("SMTP_PASS") &&
         this.config.get("EMAIL_FROM"),
     );
+  }
+
+  isConfigured(): boolean {
+    return this.usesResendApi() || this.usesSmtp();
   }
 
   private webBaseUrl(): string {
@@ -60,6 +72,13 @@ export class EmailService {
     );
   }
 
+  private getResendClient(): Resend {
+    if (!this.resendClient) {
+      this.resendClient = new Resend(this.config.get("RESEND_API_KEY"));
+    }
+    return this.resendClient;
+  }
+
   private async sendMail(
     email: string,
     subject: string,
@@ -70,12 +89,28 @@ export class EmailService {
 
     if (!this.isConfigured()) {
       if (this.config.get("NODE_ENV") !== "production") {
-        this.logger.warn(`[dev] SMTP not configured — ${devLogLabel}`);
+        this.logger.warn(`[dev] Email not configured — ${devLogLabel}`);
       } else {
         this.logger.error(
-          `SMTP not configured in production — email not sent to ${email}`,
+          `Email not configured in production — email not sent to ${email}`,
         );
       }
+      return;
+    }
+
+    if (this.usesResendApi()) {
+      const { error } = await this.getResendClient().emails.send({
+        from: from!,
+        to: email,
+        subject,
+        text,
+      });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      this.logger.log(`Email sent via Resend to ${email}: ${subject}`);
       return;
     }
 
@@ -90,6 +125,6 @@ export class EmailService {
     });
 
     await transport.sendMail({ from, to: email, subject, text });
-    this.logger.log(`Email sent to ${email}: ${subject}`);
+    this.logger.log(`Email sent via SMTP to ${email}: ${subject}`);
   }
 }
