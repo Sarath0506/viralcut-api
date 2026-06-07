@@ -1,0 +1,23 @@
+# Railway — @viralcut/api
+#
+# Dashboard:
+#   New Service → GitHub Repo → Sarath0506/viralcut-api
+#   Root Directory: /
+#   Config file: /railway.toml
+#
+# Variables (minimum):
+#   DATABASE_URL  = ${{Postgres.DATABASE_URL}}
+#   NODE_ENV        = production
+#   JWT_SECRET      = (32+ chars)
+#   CORS_ORIGINS    = https://<portal-service>.up.railway.app
+#   WEB_URL         = https://<portal-service>.up.railway.app
+
+[build]
+builder = "NIXPACKS"
+buildCommand = "pnpm install --frozen-lockfile && pnpm prisma:generate && pnpm build"
+
+[deploy]
+startCommand = "pnpm prisma:migrate:deploy && pnpm start"
+healthcheckPath = "/health"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
