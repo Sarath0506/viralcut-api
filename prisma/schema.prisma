@@ -116,6 +116,22 @@ enum SubmissionStatus {
 
 
 
+enum FormatDeliverableStatus {
+
+  draft_pending
+
+  under_review
+
+  draft_rejected
+
+  draft_approved
+
+  live_submitted
+
+}
+
+
+
 enum TransactionType {
 
   earning_credit
@@ -177,6 +193,10 @@ model User {
   wallet                    Wallet?
 
   submissions               Submission[]
+
+  campaignParticipations    CampaignParticipation[]
+
+  deliverablesReviewed      FormatDeliverable[]     @relation("DeliverableReviewedBy")
 
   payoutMethods             PayoutMethod[]
 
@@ -370,6 +390,8 @@ model Campaign {
 
   submissions  Submission[]
 
+  participations CampaignParticipation[]
+
   invites      CampaignInvite[]
 
 
@@ -475,6 +497,86 @@ model Submission {
   @@index([campaignId, status])
 
   @@map("submissions")
+
+}
+
+
+
+model CampaignParticipation {
+
+  id                String   @id @default(cuid())
+
+  campaignId        String   @map("campaign_id")
+
+  creatorId         String   @map("creator_id")
+
+  platformsSnapshot String[] @map("platforms_snapshot")
+
+  joinedAt          DateTime @default(now()) @map("joined_at")
+
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+
+
+  campaign     Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  creator      User                @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  deliverables FormatDeliverable[]
+
+
+
+  @@unique([campaignId, creatorId])
+
+  @@index([creatorId])
+
+  @@map("campaign_participations")
+
+}
+
+
+
+model FormatDeliverable {
+
+  id                 String                  @id @default(cuid())
+
+  participationId    String                  @map("participation_id")
+
+  platform           String
+
+  draftDriveUrl      String?                 @map("draft_drive_url")
+
+  livePostUrl        String?                 @map("live_post_url")
+
+  status             FormatDeliverableStatus @default(draft_pending)
+
+  rejectionReason    String?                 @map("rejection_reason")
+
+  draftSubmittedAt   DateTime?               @map("draft_submitted_at")
+
+  draftReviewedAt    DateTime?               @map("draft_reviewed_at")
+
+  liveSubmittedAt    DateTime?               @map("live_submitted_at")
+
+  reviewedByUserId   String?                 @map("reviewed_by_user_id")
+
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+
+
+
+  participation CampaignParticipation @relation(fields: [participationId], references: [id], onDelete: Cascade)
+
+  reviewedBy    User?                 @relation("DeliverableReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+
+
+  @@unique([participationId, platform])
+
+  @@index([participationId])
+
+  @@index([status])
+
+  @@map("format_deliverables")
 
 }
 

@@ -35,13 +35,19 @@ export class CampaignsService {
     const campaigns = await this.prisma.campaign.findMany({
       where: { status: CampaignStatus.live },
       orderBy: { createdAt: "desc" },
+      include: {
+        brandProfile: { select: { companyName: true, logoUrl: true } },
+      },
     });
-    return campaigns.map((c) => this.formatCampaign(c));
+    return campaigns.map((c) => this.formatCampaignForCreator(c));
   }
 
   async getLiveForCreator(campaignId: string) {
     const campaign = await this.prisma.campaign.findFirst({
       where: { id: campaignId, status: CampaignStatus.live },
+      include: {
+        brandProfile: { select: { companyName: true, logoUrl: true } },
+      },
     });
     if (!campaign) {
       throw new NotFoundException({
@@ -49,7 +55,7 @@ export class CampaignsService {
         message: "Campaign not found",
       });
     }
-    return this.formatCampaign(campaign);
+    return this.formatCampaignForCreator(campaign);
   }
 
   async listForUser(
@@ -408,6 +414,18 @@ export class CampaignsService {
         message: "Campaign budget is required to publish",
       });
     }
+  }
+
+  formatCampaignForCreator(
+    c: Parameters<CampaignsService["formatCampaign"]>[0] & {
+      brandProfile?: { companyName: string; logoUrl: string | null } | null;
+    },
+  ) {
+    return {
+      ...this.formatCampaign(c),
+      brandCompanyName: c.brandProfile?.companyName ?? null,
+      brandLogoUrl: c.brandProfile?.logoUrl ?? null,
+    };
   }
 
   formatCampaign(c: {

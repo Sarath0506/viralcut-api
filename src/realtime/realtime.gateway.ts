@@ -71,6 +71,10 @@ export class RealtimeGateway
         }
       }
 
+      if (payload.role === UserRole.creator) {
+        await client.join(`creator:${payload.sub}`);
+      }
+
       this.logger.debug(`Client connected: ${client.id} (${payload.role})`);
     } catch {
       client.disconnect();
@@ -111,5 +115,9 @@ export class RealtimeGateway
 
   emitToCampaign(campaignId: string, event: string, payload: unknown): void {
     this.server?.to(`campaign:${campaignId}`).emit(event, payload);
+  }
+
+  emitToCreator(creatorId: string, event: string, payload: unknown): void {
+    this.server?.to(`creator:${creatorId}`).emit(event, payload);
   }
 }

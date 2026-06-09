@@ -1,0 +1,612 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
+import {
+  CampaignStatus,
+  FormatDeliverableStatus,
+  Prisma,
+  UserRole,
+} from "@prisma/client";
+
+import { CampaignAccessService } from "../access/campaign-access.service";
+import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
+import { PrismaService } from "../prisma/prisma.service";
+import { RealtimeService } from "../realtime/realtime.service";
+import { GOOGLE_DRIVE_URL_MESSAGE, isGoogleDriveUrl } from "./drive-url";
+import { ReviewDeliverableAction } from "./dto/review-deliverable.dto";
+import type { SubmitDraftDto } from "./dto/submit-draft.dto";
+import type { SubmitLiveProofDto } from "./dto/submit-live-proof.dto";
+import {
+  computeParticipationSummary,
+  isParticipationCompleted,
+} from "./participation-summary";
+
+const participationInclude = {
+  campaign: {
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      platforms: true,
+      platform: true,
+      ratePer1kPaise: true,
+      maxPayoutPaise: true,
+      brandProfile: { select: { companyName: true, logoUrl: true } },
+    },
+  },
+  deliverables: { orderBy: { platform: "asc" as const } },
+} satisfies Prisma.CampaignParticipationInclude;
+
+type ParticipationWithRelations = Prisma.CampaignParticipationGetPayload<{
+  include: typeof participationInclude;
+}>;
+
+@Injectable()
+export class ParticipationService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly campaignAccess: CampaignAccessService,
+    private readonly realtime: RealtimeService,
+  ) {}
+
+  private deliverableEventPayload(
+    deliverable: {
+      id: string;
+      platform: string;
+      status: FormatDeliverableStatus;
+      participationId: string;
+    },
+    participation: {
+      creatorId: string;
+      campaignId: string;
+      campaign: { brandProfileId: string | null };
+    },
+  ) {
+    return {
+      deliverableId: deliverable.id,
+      participationId: deliverable.participationId,
+      campaignId: participation.campaignId,
+      creatorId: participation.creatorId,
+      brandProfileId: participation.campaign.brandProfileId,
+      platform: deliverable.platform,
+      status: deliverable.status,
+    };
+  }
+
+  private formatDeliverable(d: ParticipationWithRelations["deliverables"][0]) {
+    return {
+      id: d.id,
+      platform: d.platform,
+      status: d.status,
+      draftDriveUrl: d.draftDriveUrl,
+      livePostUrl: d.livePostUrl,
+      rejectionReason: d.rejectionReason,
+      draftSubmittedAt: d.draftSubmittedAt?.toISOString() ?? null,
+      draftReviewedAt: d.draftReviewedAt?.toISOString() ?? null,
+      liveSubmittedAt: d.liveSubmittedAt?.toISOString() ?? null,
+    };
+  }
+
+  private formatParticipation(participation: ParticipationWithRelations) {
+    const summary = computeParticipationSummary(
+      participation.deliverables,
+      participation.campaign.status,
+    );
+    return {
+      id: participation.id,
+      campaignId: participation.campaignId,
+      joinedAt: participation.joinedAt.toISOString(),
+      platformsSnapshot: participation.platformsSnapshot,
+      summary,
+      campaign: {
+        id: participation.campaign.id,
+        title: participation.campaign.title,
+        status: participation.campaign.status,
+        platforms: normalizeCampaignPlatforms(
+          participation.campaign.platforms,
+          participation.campaign.platform,
+        ),
+        brandCompanyName:
+          participation.campaign.brandProfile?.companyName ?? null,
+        brandLogoUrl: participation.campaign.brandProfile?.logoUrl ?? null,
+        ratePer1kDisplay: `₹${participation.campaign.ratePer1kPaise / 100} / 1K views`,
+        maxPayoutPaise: participation.campaign.maxPayoutPaise,
+      },
+      deliverables: participation.deliverables.map((d) =>
+        this.formatDeliverable(d),
+      ),
+    };
+  }
+
+  private async loadParticipation(
+    where: Prisma.CampaignParticipationWhereInput,
+  ): Promise<ParticipationWithRelations> {
+    const participation = await this.prisma.campaignParticipation.findFirst({
+      where,
+      include: participationInclude,
+    });
+    if (!participation) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Participation not found",
+      });
+    }
+    return participation;
+  }
+
+  private assertCampaignOpenForCreator(campaignStatus: CampaignStatus) {
+    if (campaignStatus !== CampaignStatus.live) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "Campaign is not open for submissions",
+      });
+    }
+  }
+
+  async joinCampaign(creatorId: string, campaignId: string) {
+    const campaign = await this.prisma.campaign.findFirst({
+      where: { id: campaignId },
+    });
+    if (!campaign || campaign.status !== CampaignStatus.live) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Campaign not available",
+      });
+    }
+
+    const existing = await this.prisma.campaignParticipation.findUnique({
+      where: {
+        campaignId_creatorId: { campaignId, creatorId },
+      },
+      include: participationInclude,
+    });
+    if (existing) {
+      throw new ConflictException({
+        code: "ALREADY_JOINED",
+        message: "Already joined this campaign",
+        details: { participation: this.formatParticipation(existing) },
+      });
+    }
+
+    const platforms = normalizeCampaignPlatforms(
+      campaign.platforms,
+      campaign.platform,
+    );
+
+    const participation = await this.prisma.campaignParticipation.create({
+      data: {
+        campaignId,
+        creatorId,
+        platformsSnapshot: platforms,
+        deliverables: {
+          create: platforms.map((platform) => ({
+            platform,
+            status: FormatDeliverableStatus.draft_pending,
+          })),
+        },
+      },
+      include: participationInclude,
+    });
+
+    this.realtime.emitParticipationJoined({
+      participationId: participation.id,
+      campaignId,
+      creatorId,
+      brandProfileId: campaign.brandProfileId,
+    });
+
+    return this.formatParticipation(participation);
+  }
+
+  async getParticipationByCampaign(creatorId: string, campaignId: string) {
+    const participation = await this.loadParticipation({
+      campaignId,
+      creatorId,
+    });
+    return this.formatParticipation(participation);
+  }
+
+  async submitDraft(
+    creatorId: string,
+    deliverableId: string,
+    dto: SubmitDraftDto,
+  ) {
+    const deliverable = await this.prisma.formatDeliverable.findFirst({
+      where: { id: deliverableId },
+      include: {
+        participation: {
+          include: { campaign: true },
+        },
+      },
+    });
+
+    if (!deliverable || deliverable.participation.creatorId !== creatorId) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Deliverable not found",
+      });
+    }
+
+    this.assertCampaignOpenForCreator(
+      deliverable.participation.campaign.status,
+    );
+
+    const resubmittable: FormatDeliverableStatus[] = [
+      FormatDeliverableStatus.draft_pending,
+      FormatDeliverableStatus.draft_rejected,
+    ];
+    if (!resubmittable.includes(deliverable.status)) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "This format cannot accept a new draft right now",
+      });
+    }
+
+    if (!isGoogleDriveUrl(dto.draftDriveUrl)) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: GOOGLE_DRIVE_URL_MESSAGE,
+      });
+    }
+
+    const updated = await this.prisma.formatDeliverable.update({
+      where: { id: deliverableId },
+      data: {
+        draftDriveUrl: dto.draftDriveUrl.trim(),
+        status: FormatDeliverableStatus.under_review,
+        rejectionReason: null,
+        draftSubmittedAt: new Date(),
+      },
+    });
+
+    this.realtime.emitDeliverableSubmitted(
+      this.deliverableEventPayload(updated, deliverable.participation),
+    );
+
+    return {
+      id: updated.id,
+      status: updated.status,
+      draftDriveUrl: updated.draftDriveUrl,
+    };
+  }
+
+  async submitLiveProof(
+    creatorId: string,
+    deliverableId: string,
+    dto: SubmitLiveProofDto,
+  ) {
+    const deliverable = await this.prisma.formatDeliverable.findFirst({
+      where: { id: deliverableId },
+      include: {
+        participation: {
+          include: { campaign: true },
+        },
+      },
+    });
+
+    if (!deliverable || deliverable.participation.creatorId !== creatorId) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Deliverable not found",
+      });
+    }
+
+    this.assertCampaignOpenForCreator(
+      deliverable.participation.campaign.status,
+    );
+
+    if (deliverable.status !== FormatDeliverableStatus.draft_approved) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "Live proof can only be submitted after draft approval",
+      });
+    }
+
+    const updated = await this.prisma.formatDeliverable.update({
+      where: { id: deliverableId },
+      data: {
+        livePostUrl: dto.livePostUrl.trim(),
+        status: FormatDeliverableStatus.live_submitted,
+        liveSubmittedAt: new Date(),
+      },
+    });
+
+    this.realtime.emitDeliverableLiveProof(
+      this.deliverableEventPayload(updated, deliverable.participation),
+    );
+
+    return {
+      id: updated.id,
+      status: updated.status,
+      livePostUrl: updated.livePostUrl,
+    };
+  }
+
+  async listForCreator(creatorId: string, tab: "active" | "completed" = "active") {
+    const participations = await this.prisma.campaignParticipation.findMany({
+      where: { creatorId },
+      include: participationInclude,
+      orderBy: { joinedAt: "desc" },
+    });
+
+    return participations
+      .map((p) => this.formatParticipation(p))
+      .filter((p) => {
+        const completed = isParticipationCompleted(p.summary);
+        return tab === "completed" ? completed : !completed;
+      })
+      .map((p) => ({
+        id: p.id,
+        summary: p.summary,
+        campaignId: p.campaignId,
+        campaignTitle: p.campaign.title,
+        brandCompanyName: p.campaign.brandCompanyName,
+        brandLogoUrl: p.campaign.brandLogoUrl,
+        platforms: p.campaign.platforms,
+        joinedAt: p.joinedAt,
+        deliverables: p.deliverables.map((d) => ({
+          id: d.id,
+          platform: d.platform,
+          status: d.status,
+        })),
+      }));
+  }
+
+  async getForCreator(creatorId: string, participationId: string) {
+    const participation = await this.loadParticipation({
+      id: participationId,
+      creatorId,
+    });
+    return this.formatParticipation(participation);
+  }
+
+  private async resolveBrandProfileIds(
+    userId: string,
+    role: UserRole,
+  ): Promise<string[] | null> {
+    if (role === UserRole.admin) {
+      return null;
+    }
+    const brandProfileId =
+      await this.campaignAccess.getBrandProfileIdForUser(userId);
+    return brandProfileId ? [brandProfileId] : [];
+  }
+
+  async listDeliverablesForBrand(
+    userId: string,
+    role: UserRole,
+    filters?: { status?: FormatDeliverableStatus; campaignId?: string },
+  ) {
+    const brandProfileIds = await this.resolveBrandProfileIds(userId, role);
+    if (brandProfileIds && brandProfileIds.length === 0) {
+      return [];
+    }
+
+    const status =
+      filters?.status ?? FormatDeliverableStatus.under_review;
+
+    const deliverables = await this.prisma.formatDeliverable.findMany({
+      where: {
+        status,
+        ...(filters?.campaignId
+          ? {
+              participation: { campaignId: filters.campaignId },
+            }
+          : {}),
+        ...(brandProfileIds
+          ? {
+              participation: {
+                campaign: { brandProfileId: { in: brandProfileIds } },
+              },
+            }
+          : {}),
+      },
+      include: {
+        participation: {
+          include: {
+            campaign: { select: { id: true, title: true } },
+            creator: {
+              select: { id: true, displayName: true, username: true },
+            },
+            deliverables: {
+              select: { id: true, platform: true, status: true },
+              orderBy: { platform: "asc" },
+            },
+          },
+        },
+      },
+      orderBy: { draftSubmittedAt: "desc" },
+      take: 100,
+    });
+
+    return deliverables.map((d) => ({
+      id: d.id,
+      platform: d.platform,
+      status: d.status,
+      draftDriveUrl: d.draftDriveUrl,
+      draftSubmittedAt: d.draftSubmittedAt?.toISOString() ?? null,
+      campaignId: d.participation.campaign.id,
+      campaignTitle: d.participation.campaign.title,
+      participationId: d.participationId,
+      creatorName:
+        d.participation.creator.displayName ??
+        d.participation.creator.username ??
+        "Creator",
+      siblingDeliverables: d.participation.deliverables.map((s) => ({
+        id: s.id,
+        platform: s.platform,
+        status: s.status,
+      })),
+    }));
+  }
+
+  async getDeliverableForBrand(
+    userId: string,
+    role: UserRole,
+    deliverableId: string,
+  ) {
+    const deliverable = await this.prisma.formatDeliverable.findFirst({
+      where: { id: deliverableId },
+      include: {
+        participation: {
+          include: {
+            campaign: true,
+            creator: {
+              select: {
+                id: true,
+                displayName: true,
+                username: true,
+                phone: true,
+              },
+            },
+            deliverables: { orderBy: { platform: "asc" } },
+          },
+        },
+      },
+    });
+
+    if (!deliverable) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Deliverable not found",
+      });
+    }
+
+    await this.campaignAccess.assertCanAccessCampaign(
+      userId,
+      role,
+      deliverable.participation.campaign,
+    );
+
+    return {
+      id: deliverable.id,
+      platform: deliverable.platform,
+      status: deliverable.status,
+      draftDriveUrl: deliverable.draftDriveUrl,
+      livePostUrl: deliverable.livePostUrl,
+      rejectionReason: deliverable.rejectionReason,
+      draftSubmittedAt: deliverable.draftSubmittedAt?.toISOString() ?? null,
+      participationId: deliverable.participationId,
+      campaign: {
+        id: deliverable.participation.campaign.id,
+        title: deliverable.participation.campaign.title,
+        ratePer1kDisplay: `₹${deliverable.participation.campaign.ratePer1kPaise / 100} / 1K views`,
+      },
+      creator: deliverable.participation.creator,
+      siblingDeliverables: deliverable.participation.deliverables.map((s) => ({
+        id: s.id,
+        platform: s.platform,
+        status: s.status,
+        draftDriveUrl: s.draftDriveUrl,
+        rejectionReason: s.rejectionReason,
+      })),
+    };
+  }
+
+  async reviewDeliverable(
+    userId: string,
+    role: UserRole,
+    deliverableId: string,
+    action: ReviewDeliverableAction,
+    rejectionReason?: string,
+  ) {
+    const deliverable = await this.prisma.formatDeliverable.findFirst({
+      where: { id: deliverableId },
+      include: {
+        participation: { include: { campaign: true } },
+      },
+    });
+
+    if (!deliverable) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Deliverable not found",
+      });
+    }
+
+    await this.campaignAccess.assertCanAccessCampaign(
+      userId,
+      role,
+      deliverable.participation.campaign,
+    );
+
+    if (deliverable.status !== FormatDeliverableStatus.under_review) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "Deliverable is not in a reviewable state",
+      });
+    }
+
+    if (action === ReviewDeliverableAction.approve) {
+      const updated = await this.prisma.formatDeliverable.update({
+        where: { id: deliverableId },
+        data: {
+          status: FormatDeliverableStatus.draft_approved,
+          draftReviewedAt: new Date(),
+          reviewedByUserId: userId,
+          rejectionReason: null,
+        },
+      });
+      this.realtime.emitDeliverableReviewed(
+        this.deliverableEventPayload(updated, deliverable.participation),
+      );
+      return { id: updated.id, status: updated.status };
+    }
+
+    if (!rejectionReason?.trim()) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "rejectionReason required when rejecting",
+      });
+    }
+
+    const updated = await this.prisma.formatDeliverable.update({
+      where: { id: deliverableId },
+      data: {
+        status: FormatDeliverableStatus.draft_rejected,
+        rejectionReason: rejectionReason.trim(),
+        draftReviewedAt: new Date(),
+        reviewedByUserId: userId,
+      },
+    });
+    this.realtime.emitDeliverableReviewed(
+      this.deliverableEventPayload(updated, deliverable.participation),
+    );
+    return { id: updated.id, status: updated.status };
+  }
+
+  async countUnderReviewForCreator(creatorId: string): Promise<number> {
+    return this.prisma.formatDeliverable.count({
+      where: {
+        status: FormatDeliverableStatus.under_review,
+        participation: { creatorId },
+      },
+    });
+  }
+
+  async countPendingReviewsForBrand(
+    userId: string,
+    role: UserRole,
+  ): Promise<number> {
+    const brandProfileIds = await this.resolveBrandProfileIds(userId, role);
+    if (brandProfileIds && brandProfileIds.length === 0) {
+      return 0;
+    }
+
+    return this.prisma.formatDeliverable.count({
+      where: {
+        status: FormatDeliverableStatus.under_review,
+        ...(brandProfileIds
+          ? {
+              participation: {
+                campaign: { brandProfileId: { in: brandProfileIds } },
+              },
+            }
+          : {}),
+      },
+    });
+  }
+}

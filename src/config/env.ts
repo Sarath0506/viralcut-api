@@ -99,5 +99,21 @@ export function validateEnv(
       .join("; ");
     throw new Error(`Invalid environment: ${message}`);
   }
-  return parsed.data;
+
+  const env = parsed.data;
+  if (
+    env.OTP_DEV_BYPASS_CODE &&
+    env.NODE_ENV !== "development"
+  ) {
+    console.warn(
+      "[env] OTP_DEV_BYPASS_CODE is set but ignored outside NODE_ENV=development",
+    );
+  }
+  if (env.OTP_DEV_LOG && env.NODE_ENV !== "development") {
+    console.warn(
+      "[env] OTP_DEV_LOG is set but OTP console logging only runs in NODE_ENV=development",
+    );
+  }
+
+  return env;
 }

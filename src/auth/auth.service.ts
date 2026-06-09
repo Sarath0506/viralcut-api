@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
-import { User, UserRole } from "@prisma/client";
+import { Prisma, User, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
 
@@ -195,19 +195,41 @@ export class AuthService {
       if (!dto.displayName) {
         throw new BadRequestException({
           code: "VALIDATION_ERROR",
-          message: "displayName required for new creators",
+          message: "No account with this phone. Sign up to create one.",
         });
       }
-      user = await this.prisma.user.create({
-        data: {
-          role: UserRole.creator,
-          phone: dto.phone,
-          displayName: dto.displayName,
-          username: dto.username,
-          wallet: { create: {} },
-        },
-        include: { wallet: true },
-      });
+      if (!dto.email?.trim()) {
+        throw new BadRequestException({
+          code: "VALIDATION_ERROR",
+          message: "Email is required to create an account.",
+        });
+      }
+      await this.assertCreatorSignupFieldsAvailable(dto);
+      try {
+        user = await this.prisma.user.create({
+          data: {
+            role: UserRole.creator,
+            phone: dto.phone,
+            displayName: dto.displayName,
+            username: dto.username,
+            email: dto.email?.toLowerCase(),
+            wallet: { create: {} },
+          },
+          include: { wallet: true },
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2002"
+        ) {
+          throw new ConflictException({
+            code: "CONFLICT",
+            message:
+              "Phone, email, or username is already registered. Try logging in or use different details.",
+          });
+        }
+        throw error;
+      }
     } else if (user.role !== UserRole.creator) {
       throw new ConflictException({
         code: "WRONG_PORTAL",
@@ -223,6 +245,34 @@ export class AuthService {
     }
 
     return this.issueTokens(user);
+  }
+
+  private async assertCreatorSignupFieldsAvailable(
+    dto: CreatorOtpVerifyDto,
+  ): Promise<void> {
+    if (dto.email) {
+      const email = dto.email.toLowerCase();
+      const existing = await this.prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        throw new ConflictException({
+          code: "CONFLICT",
+          message:
+            "This email is already registered. Use a different email or log in.",
+        });
+      }
+    }
+
+    if (dto.username) {
+      const existing = await this.prisma.user.findUnique({
+        where: { username: dto.username },
+      });
+      if (existing) {
+        throw new ConflictException({
+          code: "CONFLICT",
+          message: "This username is already taken.",
+        });
+      }
+    }
   }
 
   async refresh(refreshToken: string) {

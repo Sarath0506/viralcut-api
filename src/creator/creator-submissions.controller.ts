@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  GoneException,
   Param,
   Patch,
   Post,
@@ -16,10 +17,6 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
-import {
-  CreateSubmissionDto,
-  SubmitLiveLinkDto,
-} from "../submissions/dto/create-submission.dto";
 import { SubmissionsService } from "../submissions/submissions.service";
 
 @ApiTags("creator")
@@ -49,20 +46,20 @@ export class CreatorSubmissionsController {
   }
 
   @Post("submissions")
-  create(
-    @CurrentUser() user: AuthJwtPayload,
-    @Body() dto: CreateSubmissionDto,
-  ) {
-    return this.submissions.createForCreator(user.sub, dto);
+  create() {
+    throw new GoneException({
+      code: "DEPRECATED",
+      message:
+        "Use POST /creator/campaigns/:campaignId/join and PATCH /creator/deliverables/:id/draft",
+    });
   }
 
   @Patch("submissions/:id/live-link")
-  submitLiveLink(
-    @CurrentUser() user: AuthJwtPayload,
-    @Param("id") id: string,
-    @Body() dto: SubmitLiveLinkDto,
-  ) {
-    return this.submissions.submitLiveLink(user.sub, id, dto);
+  submitLiveLink() {
+    throw new GoneException({
+      code: "DEPRECATED",
+      message: "Use PATCH /creator/deliverables/:id/live-proof",
+    });
   }
 
   @Patch("submissions/:id/sync-performance")

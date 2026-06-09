@@ -19,7 +19,7 @@ export class WhatsappService {
 
   private shouldLogOtpInConsole(): boolean {
     return (
-      this.config.get("NODE_ENV") !== "production" ||
+      this.config.get("NODE_ENV") === "development" &&
       this.config.get("OTP_DEV_LOG") === true
     );
   }

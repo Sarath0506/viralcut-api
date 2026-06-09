@@ -10,6 +10,14 @@ import type { Response } from "express";
 
 import { errorEnvelope } from "../dto/api-envelope.dto";
 
+function defaultCodeForStatus(status: number): string {
+  if (status === HttpStatus.TOO_MANY_REQUESTS) return "RATE_LIMITED";
+  if (status === HttpStatus.UNAUTHORIZED) return "UNAUTHORIZED";
+  if (status === HttpStatus.FORBIDDEN) return "FORBIDDEN";
+  if (status === HttpStatus.NOT_FOUND) return "NOT_FOUND";
+  return "VALIDATION_ERROR";
+}
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
@@ -37,19 +45,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
         code =
           typeof record.code === "string"
             ? record.code
-            : status === HttpStatus.UNAUTHORIZED
-              ? "UNAUTHORIZED"
-              : status === HttpStatus.FORBIDDEN
-                ? "FORBIDDEN"
-                : status === HttpStatus.NOT_FOUND
-                  ? "NOT_FOUND"
-                  : "VALIDATION_ERROR";
+            : defaultCodeForStatus(status);
         details =
           typeof record.details === "object"
             ? (record.details as Record<string, unknown>)
             : undefined;
       } else if (typeof body === "string") {
         message = body;
+        code = defaultCodeForStatus(status);
       }
     } else if (exception instanceof Error) {
       this.logger.error(exception.message, exception.stack);

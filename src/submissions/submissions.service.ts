@@ -6,6 +6,8 @@ import {
 import { CampaignStatus, SubmissionStatus, UserRole } from "@prisma/client";
 
 import { CampaignAccessService } from "../access/campaign-access.service";
+import { CampaignsService } from "../campaigns/campaigns.service";
+import { ParticipationService } from "../participation/participation.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReviewAction, ReviewSubmissionDto } from "./dto/review-submission.dto";
 import type { CreateSubmissionDto } from "./dto/create-submission.dto";
@@ -20,6 +22,8 @@ export class SubmissionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly campaignAccess: CampaignAccessService,
+    private readonly campaigns: CampaignsService,
+    private readonly participation: ParticipationService,
   ) {}
 
   private async resolveBrandProfileIds(
@@ -343,21 +347,14 @@ export class SubmissionsService {
   async creatorDashboard(userId: string) {
     const [wallet, reviewCount, trending] = await Promise.all([
       this.prisma.wallet.findUnique({ where: { userId } }),
-      this.prisma.submission.count({
-        where: {
-          creatorId: userId,
-          status: {
-            in: [
-              SubmissionStatus.draft_submitted,
-              SubmissionStatus.under_review,
-            ],
-          },
-        },
-      }),
+      this.participation.countUnderReviewForCreator(userId),
       this.prisma.campaign.findMany({
         where: { status: CampaignStatus.live },
         orderBy: { createdAt: "desc" },
         take: 5,
+        include: {
+          brandProfile: { select: { companyName: true, logoUrl: true } },
+        },
       }),
     ]);
 
@@ -368,16 +365,11 @@ export class SubmissionsService {
         lifetimePaise: wallet?.lifetimePaise ?? 0,
       },
       clipsUnderReview: reviewCount,
-      trending: trending.map((c) => ({
-        id: c.id,
-        title: c.title,
-        ratePer1kDisplay: `₹${c.ratePer1kPaise / 100} / 1K views`,
-        maxPayoutPaise: c.maxPayoutPaise,
-        poolPercent:
-          c.budgetPaise > 0
-            ? Math.round((c.budgetUsedPaise / c.budgetPaise) * 100)
-            : 0,
-      })),
+      socialLinks: {
+        instagram: false,
+        youtube: false,
+      },
+      trending: trending.map((c) => this.campaigns.formatCampaignForCreator(c)),
     };
   }
 
@@ -437,17 +429,7 @@ export class SubmissionsService {
         this.prisma.campaign.count({
           where: { ...brandFilter, status: "live" },
         }),
-        this.prisma.submission.count({
-          where: {
-            campaign: brandFilter,
-            status: {
-              in: [
-                SubmissionStatus.draft_submitted,
-                SubmissionStatus.under_review,
-              ],
-            },
-          },
-        }),
+        this.participation.countPendingReviewsForBrand(userId, role),
         this.prisma.campaign.aggregate({
           where: brandFilter,
           _sum: { budgetUsedPaise: true },

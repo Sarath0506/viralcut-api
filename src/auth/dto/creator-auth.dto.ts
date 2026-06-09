@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
+  IsEmail,
   IsOptional,
   IsString,
   Length,
@@ -42,4 +43,10 @@ export class CreatorOtpVerifyDto {
   @MaxLength(30)
   @Matches(/^[a-z0-9_]+$/)
   username?: string;
+
+  @ApiPropertyOptional({ example: "creator@example.com" })
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
+  email?: string;
 }
