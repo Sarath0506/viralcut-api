@@ -198,6 +198,8 @@ model User {
 
   deliverablesReviewed      FormatDeliverable[]     @relation("DeliverableReviewedBy")
 
+  deliverableRejections     DeliverableRejectionEvent[] @relation("RejectionReviewedBy")
+
   payoutMethods             PayoutMethod[]
 
   withdrawals               Withdrawal[]
@@ -568,6 +570,8 @@ model FormatDeliverable {
 
   reviewedBy    User?                 @relation("DeliverableReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
 
+  rejectionEvents DeliverableRejectionEvent[]
+
 
 
   @@unique([participationId, platform])
@@ -577,6 +581,36 @@ model FormatDeliverable {
   @@index([status])
 
   @@map("format_deliverables")
+
+}
+
+
+
+model DeliverableRejectionEvent {
+
+  id               String   @id @default(cuid())
+
+  deliverableId    String   @map("deliverable_id")
+
+  draftDriveUrl    String   @map("draft_drive_url")
+
+  rejectionReason  String   @map("rejection_reason")
+
+  reviewedByUserId String?  @map("reviewed_by_user_id")
+
+  rejectedAt       DateTime @default(now()) @map("rejected_at")
+
+
+
+  deliverable FormatDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+
+  reviewedBy  User?             @relation("RejectionReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+
+
+  @@index([deliverableId, rejectedAt])
+
+  @@map("deliverable_rejection_events")
 
 }
 

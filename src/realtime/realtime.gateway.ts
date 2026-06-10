@@ -73,6 +73,7 @@ export class RealtimeGateway
 
       if (payload.role === UserRole.creator) {
         await client.join(`creator:${payload.sub}`);
+        await client.join("creators");
       }
 
       this.logger.debug(`Client connected: ${client.id} (${payload.role})`);
@@ -119,5 +120,9 @@ export class RealtimeGateway
 
   emitToCreator(creatorId: string, event: string, payload: unknown): void {
     this.server?.to(`creator:${creatorId}`).emit(event, payload);
+  }
+
+  emitToCreators(event: string, payload: unknown): void {
+    this.server?.to("creators").emit(event, payload);
   }
 }

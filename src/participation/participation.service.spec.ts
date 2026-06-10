@@ -28,6 +28,11 @@ function makePrisma() {
       update: vi.fn(),
       count: vi.fn(),
     },
+    deliverableRejectionEvent: {
+      findMany: vi.fn(),
+      create: vi.fn(),
+    },
+    $transaction: vi.fn(),
   };
 }
 
@@ -101,6 +106,7 @@ describe("ParticipationService", () => {
             draftSubmittedAt: null,
             draftReviewedAt: null,
             liveSubmittedAt: null,
+            rejectionEvents: [],
           },
           {
             id: "d2",
@@ -112,6 +118,7 @@ describe("ParticipationService", () => {
             draftSubmittedAt: null,
             draftReviewedAt: null,
             liveSubmittedAt: null,
+            rejectionEvents: [],
           },
         ],
       });
@@ -168,6 +175,11 @@ describe("ParticipationService", () => {
       prisma.formatDeliverable.findFirst.mockResolvedValue({
         id: "d1",
         status: FormatDeliverableStatus.draft_rejected,
+        rejectionEvents: [
+          {
+            draftDriveUrl: "https://drive.google.com/file/d/old/view",
+          },
+        ],
         participation: {
           creatorId: "creator-1",
           campaignId: "camp-1",
@@ -205,6 +217,25 @@ describe("ParticipationService", () => {
       await expect(
         service.submitDraft("creator-1", "d1", {
           draftDriveUrl: "https://dropbox.com/s/abc",
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("blocks resubmit with same Drive URL as last rejection", async () => {
+      const rejectedUrl = "https://drive.google.com/file/d/same/view";
+      prisma.formatDeliverable.findFirst.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.draft_rejected,
+        rejectionEvents: [{ draftDriveUrl: rejectedUrl }],
+        participation: {
+          creatorId: "creator-1",
+          campaign: { status: CampaignStatus.live },
+        },
+      });
+
+      await expect(
+        service.submitDraft("creator-1", "d1", {
+          draftDriveUrl: rejectedUrl,
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
@@ -307,6 +338,69 @@ describe("ParticipationService", () => {
           UserRole.brand,
           "d1",
           ReviewDeliverableAction.reject,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("creates rejection history on reject", async () => {
+      prisma.formatDeliverable.findFirst.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.under_review,
+        draftDriveUrl: "https://drive.google.com/file/d/abc/view",
+        participation: {
+          campaign: { id: "camp-1" },
+          campaignId: "camp-1",
+          creatorId: "creator-1",
+        },
+        participationId: "part-1",
+        platform: "instagram_reel",
+      });
+      prisma.deliverableRejectionEvent.findMany.mockResolvedValue([]);
+      prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => {
+        const tx = {
+          deliverableRejectionEvent: { create: vi.fn() },
+          formatDeliverable: {
+            update: vi.fn().mockResolvedValue({
+              id: "d1",
+              status: FormatDeliverableStatus.draft_rejected,
+              participationId: "part-1",
+              platform: "instagram_reel",
+            }),
+          },
+        };
+        return fn(tx);
+      });
+
+      const result = await service.reviewDeliverable(
+        "brand-1",
+        UserRole.brand,
+        "d1",
+        ReviewDeliverableAction.reject,
+        "Wrong aspect ratio",
+      );
+
+      expect(result.status).toBe(FormatDeliverableStatus.draft_rejected);
+      expect(prisma.$transaction).toHaveBeenCalled();
+    });
+
+    it("blocks duplicate rejection reason", async () => {
+      prisma.formatDeliverable.findFirst.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.under_review,
+        draftDriveUrl: "https://drive.google.com/file/d/abc/view",
+        participation: { campaign: { id: "camp-1" } },
+      });
+      prisma.deliverableRejectionEvent.findMany.mockResolvedValue([
+        { rejectionReason: "Wrong aspect ratio" },
+      ]);
+
+      await expect(
+        service.reviewDeliverable(
+          "brand-1",
+          UserRole.brand,
+          "d1",
+          ReviewDeliverableAction.reject,
+          "wrong  aspect ratio",
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
     });

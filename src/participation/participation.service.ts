@@ -23,6 +23,18 @@ import {
   computeParticipationSummary,
   isParticipationCompleted,
 } from "./participation-summary";
+import {
+  isDuplicateRejectionReason,
+  REJECTION_HISTORY_LIMIT,
+} from "./rejection-reason";
+
+const rejectionEventsInclude = {
+  orderBy: { rejectedAt: "desc" as const },
+  take: REJECTION_HISTORY_LIMIT,
+  include: {
+    reviewedBy: { select: { displayName: true } },
+  },
+} satisfies Prisma.DeliverableRejectionEventFindManyArgs;
 
 const participationInclude = {
   campaign: {
@@ -37,7 +49,12 @@ const participationInclude = {
       brandProfile: { select: { companyName: true, logoUrl: true } },
     },
   },
-  deliverables: { orderBy: { platform: "asc" as const } },
+  deliverables: {
+    orderBy: { platform: "asc" as const },
+    include: {
+      rejectionEvents: rejectionEventsInclude,
+    },
+  },
 } satisfies Prisma.CampaignParticipationInclude;
 
 type ParticipationWithRelations = Prisma.CampaignParticipationGetPayload<{
@@ -76,6 +93,24 @@ export class ParticipationService {
     };
   }
 
+  private formatRejectionHistory(
+    events: Array<{
+      id: string;
+      rejectionReason: string;
+      draftDriveUrl: string;
+      rejectedAt: Date;
+      reviewedBy: { displayName: string | null } | null;
+    }>,
+  ) {
+    return events.map((e) => ({
+      id: e.id,
+      rejectionReason: e.rejectionReason,
+      draftDriveUrl: e.draftDriveUrl,
+      rejectedAt: e.rejectedAt.toISOString(),
+      reviewedByDisplayName: e.reviewedBy?.displayName ?? null,
+    }));
+  }
+
   private formatDeliverable(d: ParticipationWithRelations["deliverables"][0]) {
     return {
       id: d.id,
@@ -87,6 +122,7 @@ export class ParticipationService {
       draftSubmittedAt: d.draftSubmittedAt?.toISOString() ?? null,
       draftReviewedAt: d.draftReviewedAt?.toISOString() ?? null,
       liveSubmittedAt: d.liveSubmittedAt?.toISOString() ?? null,
+      rejectionHistory: this.formatRejectionHistory(d.rejectionEvents),
     };
   }
 
@@ -217,6 +253,10 @@ export class ParticipationService {
     const deliverable = await this.prisma.formatDeliverable.findFirst({
       where: { id: deliverableId },
       include: {
+        rejectionEvents: {
+          orderBy: { rejectedAt: "desc" },
+          take: 1,
+        },
         participation: {
           include: { campaign: true },
         },
@@ -252,10 +292,24 @@ export class ParticipationService {
       });
     }
 
+    const trimmedUrl = dto.draftDriveUrl.trim();
+    const lastRejected = deliverable.rejectionEvents[0];
+    if (
+      deliverable.status === FormatDeliverableStatus.draft_rejected &&
+      lastRejected &&
+      lastRejected.draftDriveUrl.trim() === trimmedUrl
+    ) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message:
+          "This Drive link was already rejected. Upload an updated creative or use a new link.",
+      });
+    }
+
     const updated = await this.prisma.formatDeliverable.update({
       where: { id: deliverableId },
       data: {
-        draftDriveUrl: dto.draftDriveUrl.trim(),
+        draftDriveUrl: trimmedUrl,
         status: FormatDeliverableStatus.under_review,
         rejectionReason: null,
         draftSubmittedAt: new Date(),
@@ -351,6 +405,7 @@ export class ParticipationService {
           id: d.id,
           platform: d.platform,
           status: d.status,
+          priorRejectionCount: d.rejectionHistory.length,
         })),
       }));
   }
@@ -405,6 +460,7 @@ export class ParticipationService {
           : {}),
       },
       include: {
+        _count: { select: { rejectionEvents: true } },
         participation: {
           include: {
             campaign: { select: { id: true, title: true } },
@@ -435,6 +491,7 @@ export class ParticipationService {
         d.participation.creator.displayName ??
         d.participation.creator.username ??
         "Creator",
+      priorRejectionCount: d._count.rejectionEvents,
       siblingDeliverables: d.participation.deliverables.map((s) => ({
         id: s.id,
         platform: s.platform,
@@ -451,6 +508,7 @@ export class ParticipationService {
     const deliverable = await this.prisma.formatDeliverable.findFirst({
       where: { id: deliverableId },
       include: {
+        rejectionEvents: rejectionEventsInclude,
         participation: {
           include: {
             campaign: true,
@@ -490,6 +548,9 @@ export class ParticipationService {
       rejectionReason: deliverable.rejectionReason,
       draftSubmittedAt: deliverable.draftSubmittedAt?.toISOString() ?? null,
       participationId: deliverable.participationId,
+      rejectionHistory: this.formatRejectionHistory(
+        deliverable.rejectionEvents,
+      ),
       campaign: {
         id: deliverable.participation.campaign.id,
         title: deliverable.participation.campaign.title,
@@ -563,15 +624,49 @@ export class ParticipationService {
       });
     }
 
-    const updated = await this.prisma.formatDeliverable.update({
-      where: { id: deliverableId },
-      data: {
-        status: FormatDeliverableStatus.draft_rejected,
-        rejectionReason: rejectionReason.trim(),
-        draftReviewedAt: new Date(),
-        reviewedByUserId: userId,
-      },
+    const trimmedReason = rejectionReason.trim();
+    const priorEvents = await this.prisma.deliverableRejectionEvent.findMany({
+      where: { deliverableId },
+      select: { rejectionReason: true },
     });
+
+    if (
+      isDuplicateRejectionReason(
+        trimmedReason,
+        priorEvents.map((e) => e.rejectionReason),
+      )
+    ) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message:
+          "This rejection reason was already used for this format. Update your feedback or approve if the issue is resolved.",
+      });
+    }
+
+    const draftDriveUrl = deliverable.draftDriveUrl?.trim() ?? "";
+    const reviewedAt = new Date();
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.deliverableRejectionEvent.create({
+        data: {
+          deliverableId,
+          draftDriveUrl,
+          rejectionReason: trimmedReason,
+          reviewedByUserId: userId,
+        },
+      });
+
+      return tx.formatDeliverable.update({
+        where: { id: deliverableId },
+        data: {
+          status: FormatDeliverableStatus.draft_rejected,
+          rejectionReason: trimmedReason,
+          draftReviewedAt: reviewedAt,
+          reviewedByUserId: userId,
+        },
+      });
+    });
+
     this.realtime.emitDeliverableReviewed(
       this.deliverableEventPayload(updated, deliverable.participation),
     );

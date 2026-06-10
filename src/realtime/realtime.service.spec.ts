@@ -8,6 +8,7 @@ function makeGateway() {
     emitToBrand: vi.fn(),
     emitToCampaign: vi.fn(),
     emitToCreator: vi.fn(),
+    emitToCreators: vi.fn(),
   };
 }
 
@@ -30,8 +31,13 @@ describe("RealtimeService deliverable events", () => {
     service = new RealtimeService(gateway as never);
   });
 
-  it("emitDeliverableSubmitted notifies admin, brand, and campaign room", () => {
+  it("emitDeliverableSubmitted notifies creator, admin, brand, and campaign room", () => {
     service.emitDeliverableSubmitted(payload);
+    expect(gateway.emitToCreator).toHaveBeenCalledWith(
+      "creator-1",
+      "deliverable:submitted",
+      payload,
+    );
     expect(gateway.emitToAdmin).toHaveBeenCalledWith(
       "deliverable:submitted",
       payload,
@@ -59,6 +65,19 @@ describe("RealtimeService deliverable events", () => {
       expect.objectContaining({ status: "draft_approved" }),
     );
     expect(gateway.emitToBrand).toHaveBeenCalled();
+  });
+
+  it("emitCampaignPublished notifies creators marketplace room", () => {
+    const campaign = { id: "camp-1", brandProfileId: "brand-1", title: "Test" };
+    service.emitCampaignPublished(campaign);
+    expect(gateway.emitToCreators).toHaveBeenCalledWith("campaign:published", {
+      campaign,
+    });
+    expect(gateway.emitToCampaign).toHaveBeenCalledWith(
+      "camp-1",
+      "campaign:published",
+      { campaign },
+    );
   });
 
   it("emitDeliverableLiveProof notifies creator and brand", () => {
