@@ -7,7 +7,7 @@ import {
 } from "./participation-summary";
 
 /**
- * QA matrix from multi-format plan — automated checks for edge-case summaries.
+ * QA matrix from multi-format plan; automated checks for edge-case summaries.
  */
 describe("Participation QA edge cases", () => {
   it("partial approve/reject: IG rejected + YT approved without live = action_required", () => {
@@ -29,7 +29,7 @@ describe("Participation QA edge cases", () => {
     expect(summary).toBe("action_required");
   });
 
-  it("partial approve: IG live_submitted + YT rejected = proof_complete", () => {
+  it("partial live/reject: IG live_submitted + YT rejected = action_required", () => {
     const summary = computeParticipationSummary(
       [
         {
@@ -45,11 +45,11 @@ describe("Participation QA edge cases", () => {
       ],
       CampaignStatus.live,
     );
-    expect(summary).toBe("proof_complete");
-    expect(isParticipationCompleted(summary)).toBe(true);
+    expect(summary).toBe("action_required");
+    expect(isParticipationCompleted(summary)).toBe(false);
   });
 
-  it("all platforms rejected moves to completed tab", () => {
+  it("all platforms rejected requires creator action", () => {
     const summary = computeParticipationSummary(
       [
         {
@@ -65,8 +65,8 @@ describe("Participation QA edge cases", () => {
       ],
       CampaignStatus.live,
     );
-    expect(summary).toBe("proof_complete");
-    expect(isParticipationCompleted(summary)).toBe(true);
+    expect(summary).toBe("action_required");
+    expect(isParticipationCompleted(summary)).toBe(false);
   });
 
   it("closed campaign after join yields closed summary", () => {

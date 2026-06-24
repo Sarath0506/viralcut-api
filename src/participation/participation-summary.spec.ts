@@ -81,22 +81,7 @@ describe("computeParticipationSummary", () => {
     ).toBe("action_required");
   });
 
-  it("returns action_required when approved format lacks live proof", () => {
-    expect(
-      computeParticipationSummary(
-        [
-          d(
-            FormatDeliverableStatus.draft_approved,
-            "https://drive.google.com/a",
-            null,
-          ),
-        ],
-        CampaignStatus.live,
-      ),
-    ).toBe("action_required");
-  });
-
-  it("returns proof_complete when all approved formats have live proof", () => {
+  it("returns action_required when live proof exists but another format is rejected", () => {
     expect(
       computeParticipationSummary(
         [
@@ -113,10 +98,45 @@ describe("computeParticipationSummary", () => {
         ],
         CampaignStatus.live,
       ),
+    ).toBe("action_required");
+  });
+
+  it("returns action_required when approved format lacks live proof", () => {
+    expect(
+      computeParticipationSummary(
+        [
+          d(
+            FormatDeliverableStatus.draft_approved,
+            "https://drive.google.com/a",
+            null,
+          ),
+        ],
+        CampaignStatus.live,
+      ),
+    ).toBe("action_required");
+  });
+
+  it("returns proof_complete only when all formats have live proof", () => {
+    expect(
+      computeParticipationSummary(
+        [
+          d(
+            FormatDeliverableStatus.live_submitted,
+            "https://drive.google.com/a",
+            "https://instagram.com/reel/1",
+          ),
+          d(
+            FormatDeliverableStatus.live_submitted,
+            "https://drive.google.com/b",
+            "https://youtube.com/shorts/1",
+          ),
+        ],
+        CampaignStatus.live,
+      ),
     ).toBe("proof_complete");
   });
 
-  it("returns proof_complete when all formats are rejected", () => {
+  it("returns action_required when all formats are rejected", () => {
     expect(
       computeParticipationSummary(
         [
@@ -131,7 +151,7 @@ describe("computeParticipationSummary", () => {
         ],
         CampaignStatus.live,
       ),
-    ).toBe("proof_complete");
+    ).toBe("action_required");
   });
 });
 
@@ -140,5 +160,6 @@ describe("isParticipationCompleted", () => {
     expect(isParticipationCompleted("proof_complete")).toBe(true);
     expect(isParticipationCompleted("closed")).toBe(true);
     expect(isParticipationCompleted("in_review")).toBe(false);
+    expect(isParticipationCompleted("action_required")).toBe(false);
   });
 });

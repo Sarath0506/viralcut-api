@@ -38,24 +38,10 @@ export function computeParticipationSummary(
     return "drafts_incomplete";
   }
 
-  const allRejected = deliverables.every(
-    (d) => d.status === FormatDeliverableStatus.draft_rejected,
+  const allLiveSubmitted = deliverables.every(
+    (d) => d.status === FormatDeliverableStatus.live_submitted,
   );
-  if (allRejected) {
-    return "proof_complete";
-  }
-
-  const approvedOrLive = deliverables.filter(
-    (d) =>
-      d.status === FormatDeliverableStatus.draft_approved ||
-      d.status === FormatDeliverableStatus.live_submitted,
-  );
-  const allApprovedHaveLive =
-    approvedOrLive.length > 0 &&
-    approvedOrLive.every(
-      (d) => d.status === FormatDeliverableStatus.live_submitted,
-    );
-  if (allApprovedHaveLive) {
+  if (allLiveSubmitted) {
     return "proof_complete";
   }
 
