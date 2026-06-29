@@ -46,6 +46,7 @@ const participationInclude = {
       platform: true,
       ratePer1kPaise: true,
       maxPayoutPaise: true,
+      coverImageUrl: true,
       brandProfile: { select: { companyName: true, logoUrl: true } },
     },
   },
@@ -148,6 +149,7 @@ export class ParticipationService {
         brandCompanyName:
           participation.campaign.brandProfile?.companyName ?? null,
         brandLogoUrl: participation.campaign.brandProfile?.logoUrl ?? null,
+        coverImageUrl: participation.campaign.coverImageUrl ?? null,
         ratePer1kDisplay: `₹${participation.campaign.ratePer1kPaise / 100} / 1K views`,
         maxPayoutPaise: participation.campaign.maxPayoutPaise,
       },
@@ -399,6 +401,7 @@ export class ParticipationService {
         campaignTitle: p.campaign.title,
         brandCompanyName: p.campaign.brandCompanyName,
         brandLogoUrl: p.campaign.brandLogoUrl,
+        coverImageUrl: p.campaign.coverImageUrl,
         platforms: p.campaign.platforms,
         joinedAt: p.joinedAt,
         deliverables: p.deliverables.map((d) => ({
