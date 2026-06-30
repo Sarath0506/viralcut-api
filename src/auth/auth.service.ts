@@ -101,7 +101,7 @@ export class AuthService {
       });
     }
 
-    if (user.role !== UserRole.brand) {
+    if (user.role !== UserRole.brand && user.role !== UserRole.staff) {
       throw invalidBrandCredentials();
     }
 

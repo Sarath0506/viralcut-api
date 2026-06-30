@@ -9,24 +9,24 @@ import {
   ValidatorConstraintInterface,
 } from "class-validator";
 
-import { GOOGLE_DRIVE_URL_MESSAGE, isGoogleDriveUrl } from "../drive-url";
+import { DRAFT_URL_MESSAGE, isValidDraftUrl } from "../drive-url";
 
-@ValidatorConstraint({ name: "isGoogleDriveUrl", async: false })
-class IsGoogleDriveUrlConstraint implements ValidatorConstraintInterface {
+@ValidatorConstraint({ name: "isValidDraftUrl", async: false })
+class IsValidDraftUrlConstraint implements ValidatorConstraintInterface {
   validate(value: string): boolean {
-    return typeof value === "string" && isGoogleDriveUrl(value);
+    return typeof value === "string" && isValidDraftUrl(value);
   }
 
   defaultMessage(_args: ValidationArguments): string {
-    return GOOGLE_DRIVE_URL_MESSAGE;
+    return DRAFT_URL_MESSAGE;
   }
 }
 
 export class SubmitDraftDto {
   @ApiProperty({ example: "https://drive.google.com/file/d/abc/view" })
   @IsString()
-  @IsUrl({ require_protocol: true })
+  @IsUrl({ require_protocol: true, require_tld: false })
   @MaxLength(2048)
-  @Validate(IsGoogleDriveUrlConstraint)
+  @Validate(IsValidDraftUrlConstraint)
   draftDriveUrl!: string;
 }

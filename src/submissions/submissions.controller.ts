@@ -27,7 +27,7 @@ import { SubmissionsService } from "./submissions.service";
 @ApiTags("submissions")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.brand, UserRole.admin)
+@Roles(UserRole.brand, UserRole.admin, UserRole.staff)
 @Controller("submissions")
 export class SubmissionsController {
   constructor(

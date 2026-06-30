@@ -1,0 +1,91 @@
+import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { CampaignStatus, UserRole } from "@prisma/client";
+
+import { PrismaService } from "../prisma/prisma.service";
+import { CampaignsService } from "../campaigns/campaigns.service";
+import type { CreateCampaignDto } from "../campaigns/dto/campaign.dto";
+
+@Injectable()
+export class StaffService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly campaigns: CampaignsService,
+  ) {}
+
+  async getAssignedBrands(staffUserId: string) {
+    const assignments = await this.prisma.staffBrandAssignment.findMany({
+      where: { staffUserId },
+      include: {
+        brandProfile: {
+          select: {
+            id: true,
+            companyName: true,
+            logoUrl: true,
+            companyEmail: true,
+            _count: { select: { campaigns: true } },
+          },
+        },
+      },
+      orderBy: { assignedAt: "desc" },
+    });
+    return assignments.map((a) => ({
+      id: a.brandProfile.id,
+      companyName: a.brandProfile.companyName,
+      logoUrl: a.brandProfile.logoUrl,
+      companyEmail: a.brandProfile.companyEmail,
+      campaignCount: a.brandProfile._count.campaigns,
+      assignedAt: a.assignedAt.toISOString(),
+    }));
+  }
+
+  async getBrand(staffUserId: string, brandProfileId: string) {
+    await this.assertAssigned(staffUserId, brandProfileId);
+
+    const b = await this.prisma.brandProfile.findUnique({
+      where: { id: brandProfileId },
+      include: {
+        user: { select: { id: true, email: true, displayName: true } },
+        campaigns: {
+          orderBy: { createdAt: "desc" },
+          include: { _count: { select: { submissions: true } } },
+        },
+      },
+    });
+    if (!b) throw new NotFoundException({ code: "NOT_FOUND", message: "Brand not found" });
+
+    return {
+      id: b.id,
+      companyName: b.companyName,
+      companyEmail: b.companyEmail,
+      logoUrl: b.logoUrl,
+      email: b.user.email,
+      displayName: b.user.displayName,
+      pocName: b.pocName,
+      pocPhone: b.pocPhone,
+      pocEmail: b.pocEmail,
+      createdAt: b.createdAt.toISOString(),
+      campaigns: b.campaigns.map((c) => ({
+        ...this.campaigns.formatCampaign(c),
+        submissionCount: c._count.submissions,
+      })),
+    };
+  }
+
+  async createCampaignForBrand(staffUserId: string, brandProfileId: string, dto: CreateCampaignDto) {
+    await this.assertAssigned(staffUserId, brandProfileId);
+    return this.campaigns.create(staffUserId, UserRole.admin, {
+      ...dto,
+      brandProfileId,
+      status: dto.status ?? CampaignStatus.draft,
+    });
+  }
+
+  async assertAssigned(staffUserId: string, brandProfileId: string) {
+    const assignment = await this.prisma.staffBrandAssignment.findUnique({
+      where: { staffUserId_brandProfileId: { staffUserId, brandProfileId } },
+    });
+    if (!assignment) {
+      throw new ForbiddenException({ code: "FORBIDDEN", message: "Not assigned to this brand" });
+    }
+  }
+}

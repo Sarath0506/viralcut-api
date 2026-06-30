@@ -24,6 +24,8 @@ enum UserRole {
 
   admin
 
+  staff
+
 }
 
 
@@ -128,6 +130,12 @@ enum FormatDeliverableStatus {
 
   live_submitted
 
+  proof_under_review
+
+  proof_approved
+
+  proof_rejected
+
 }
 
 
@@ -203,6 +211,8 @@ model User {
   payoutMethods             PayoutMethod[]
 
   withdrawals               Withdrawal[]
+
+  staffBrandAssignments     StaffBrandAssignment[] @relation("StaffAssignments")
 
   refreshTokens             RefreshToken[]
 
@@ -310,7 +320,15 @@ model BrandProfile {
 
   companyName String   @map("company_name")
 
+  companyEmail String?  @map("company_email")
+
   logoUrl     String?  @map("logo_url")
+
+  pocName     String?  @map("poc_name")
+
+  pocPhone    String?  @map("poc_phone")
+
+  pocEmail    String?  @map("poc_email")
 
   createdAt   DateTime @default(now()) @map("created_at")
 
@@ -324,11 +342,35 @@ model BrandProfile {
 
 
 
+  staffAssignments StaffBrandAssignment[]
+
   @@map("brand_profiles")
 
 }
 
+model StaffBrandAssignment {
 
+  id            String   @id @default(cuid())
+
+  staffUserId   String   @map("staff_user_id")
+
+  brandProfileId String  @map("brand_profile_id")
+
+  assignedAt    DateTime @default(now()) @map("assigned_at")
+
+  staffUser     User         @relation("StaffAssignments", fields: [staffUserId], references: [id], onDelete: Cascade)
+
+  brandProfile  BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([staffUserId, brandProfileId])
+
+  @@index([staffUserId])
+
+  @@index([brandProfileId])
+
+  @@map("staff_brand_assignments")
+
+}
 
 model Campaign {
 
@@ -559,6 +601,18 @@ model FormatDeliverable {
   draftReviewedAt    DateTime?               @map("draft_reviewed_at")
 
   liveSubmittedAt    DateTime?               @map("live_submitted_at")
+
+  viewCount          Int                     @default(0) @map("view_count")
+
+  reach              Int                     @default(0)
+
+  likeCount          Int                     @default(0) @map("like_count")
+
+  commentCount       Int                     @default(0) @map("comment_count")
+
+  shareCount         Int                     @default(0) @map("share_count")
+
+  proofReviewedAt    DateTime?               @map("proof_reviewed_at")
 
   reviewedByUserId   String?                 @map("reviewed_by_user_id")
 

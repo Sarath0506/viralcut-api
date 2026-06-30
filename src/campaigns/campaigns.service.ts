@@ -63,10 +63,18 @@ export class CampaignsService {
     role: UserRole,
     query: ListCampaignsQueryDto,
   ) {
-    const brandProfileId =
-      role === UserRole.brand
-        ? await this.campaignAccess.getBrandProfileIdForUser(userId)
-        : null;
+    let brandProfileId: string | null = null;
+    let staffBrandIds: string[] | null = null;
+
+    if (role === UserRole.brand) {
+      brandProfileId = await this.campaignAccess.getBrandProfileIdForUser(userId);
+    } else if (role === UserRole.staff) {
+      const assignments = await this.prisma.staffBrandAssignment.findMany({
+        where: { staffUserId: userId },
+        select: { brandProfileId: true },
+      });
+      staffBrandIds = assignments.map((a) => a.brandProfileId);
+    }
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 6;
@@ -74,9 +82,8 @@ export class CampaignsService {
 
     const where: Prisma.CampaignWhereInput = {
       ...(query.status ? { status: query.status } : {}),
-      ...(role === UserRole.brand && brandProfileId
-        ? { brandProfileId }
-        : {}),
+      ...(role === UserRole.brand && brandProfileId ? { brandProfileId } : {}),
+      ...(role === UserRole.staff && staffBrandIds ? { brandProfileId: { in: staffBrandIds } } : {}),
     };
 
     const [total, campaigns] = await this.prisma.$transaction([
@@ -150,7 +157,17 @@ export class CampaignsService {
 
     if (role === UserRole.admin) {
       ownership = CampaignOwnership.admin_created;
-      brandProfileId = null;
+      brandProfileId = dto.brandProfileId ?? null;
+    } else if (role === UserRole.staff) {
+      brandProfileId = dto.brandProfileId ?? null;
+      if (brandProfileId) {
+        const assignment = await this.prisma.staffBrandAssignment.findUnique({
+          where: { staffUserId_brandProfileId: { staffUserId: userId, brandProfileId } },
+        });
+        if (!assignment) {
+          throw new ForbiddenException({ code: "FORBIDDEN", message: "Not assigned to this brand" });
+        }
+      }
     } else {
       brandProfileId =
         await this.campaignAccess.resolveBrandProfileIdForBrandCreate(
@@ -351,20 +368,11 @@ export class CampaignsService {
     return { deleted: true, id: campaignId };
   }
 
-  private assertAdminCanPublish(campaign: {
+  private assertAdminCanPublish(_campaign: {
     ownership?: CampaignOwnership;
     brandProfileId: string | null;
     inviteAcceptedAt: Date | null;
   }): void {
-    if (campaign.ownership !== CampaignOwnership.admin_created) {
-      return;
-    }
-    if (!campaign.brandProfileId || !campaign.inviteAcceptedAt) {
-      throw new ForbiddenException({
-        code: "PUBLISH_BLOCKED_PENDING_INVITE",
-        message: "Invite a brand and wait for acceptance before publishing",
-      });
-    }
   }
 
   private assertStatusTransition(

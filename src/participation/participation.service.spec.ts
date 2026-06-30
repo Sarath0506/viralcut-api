@@ -66,6 +66,7 @@ describe("ParticipationService", () => {
       prisma as never,
       campaignAccess as never,
       realtime as never,
+      { getViewCount: async () => ({ viewCount: 0, platform: "unknown" }) } as never,
     );
   });
 
