@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "format_deliverables" ADD COLUMN     "comment_count" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "like_count" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "reach" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "share_count" INTEGER NOT NULL DEFAULT 0;

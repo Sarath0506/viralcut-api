@@ -9,6 +9,7 @@ import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { TransformInterceptor } from "./common/interceptors/transform.interceptor";
 import { AccessModule } from "./access/access.module";
 import { AdminModule } from "./admin/admin.module";
+import { StaffModule } from "./staff/staff.module";
 import { AuthModule } from "./auth/auth.module";
 import { CampaignsModule } from "./campaigns/campaigns.module";
 import { HealthModule } from "./health/health.module";
@@ -51,6 +52,7 @@ import { WalletModule } from "./wallet/wallet.module";
     RealtimeModule,
     AuthModule,
     AdminModule,
+    StaffModule,
     UsersModule,
     WalletModule,
     PayoutsModule,

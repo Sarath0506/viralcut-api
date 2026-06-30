@@ -1,4 +1,4 @@
-import { NotFoundException, Injectable } from "@nestjs/common";
+import { NotFoundException, BadRequestException, Injectable } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
@@ -43,5 +43,40 @@ export class UsersService {
     }
 
     return base;
+  }
+
+  async updateBrandProfile(
+    userId: string,
+    data: { companyName?: string; displayName?: string; logoUrl?: string },
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { brandProfile: true },
+    });
+    if (!user?.brandProfile) {
+      throw new BadRequestException({ code: "FORBIDDEN", message: "No brand profile found" });
+    }
+
+    const [updatedProfile, updatedUser] = await this.prisma.$transaction([
+      this.prisma.brandProfile.update({
+        where: { id: user.brandProfile.id },
+        data: {
+          ...(data.companyName !== undefined && { companyName: data.companyName }),
+          ...(data.logoUrl !== undefined && { logoUrl: data.logoUrl }),
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          ...(data.displayName !== undefined && { displayName: data.displayName }),
+        },
+      }),
+    ]);
+
+    return {
+      companyName: updatedProfile.companyName,
+      logoUrl: updatedProfile.logoUrl,
+      displayName: updatedUser.displayName,
+    };
   }
 }

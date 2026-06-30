@@ -58,6 +58,11 @@ export class ReferenceAssetDto {
 }
 
 export class CreateCampaignDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  brandProfileId?: string;
+
   @ApiPropertyOptional({ enum: CampaignWizardStep })
   @IsOptional()
   @IsEnum(CampaignWizardStep)

@@ -37,7 +37,7 @@ import { ListCampaignsQueryDto } from "./dto/list-campaigns-query.dto";
 @ApiTags("campaigns")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.brand, UserRole.admin)
+@Roles(UserRole.brand, UserRole.admin, UserRole.staff)
 @Controller("campaigns")
 export class CampaignsController {
   constructor(

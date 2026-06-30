@@ -38,10 +38,14 @@ export function computeParticipationSummary(
     return "drafts_incomplete";
   }
 
-  const allLiveSubmitted = deliverables.every(
-    (d) => d.status === FormatDeliverableStatus.live_submitted,
-  );
-  if (allLiveSubmitted) {
+  const proofDoneStatuses = [
+    FormatDeliverableStatus.live_submitted,
+    FormatDeliverableStatus.proof_under_review,
+    FormatDeliverableStatus.proof_approved,
+  ] as string[];
+
+  const allProofDone = deliverables.every((d) => proofDoneStatuses.includes(d.status));
+  if (allProofDone) {
     return "proof_complete";
   }
 

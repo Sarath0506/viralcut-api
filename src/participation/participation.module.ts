@@ -1,11 +1,12 @@
 import { Module } from "@nestjs/common";
 
+import { ApifyService } from "../common/apify.service";
 import { RealtimeModule } from "../realtime/realtime.module";
 import { ParticipationService } from "./participation.service";
 
 @Module({
   imports: [RealtimeModule],
-  providers: [ParticipationService],
+  providers: [ParticipationService, ApifyService],
   exports: [ParticipationService],
 })
 export class ParticipationModule {}

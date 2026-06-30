@@ -15,6 +15,8 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   /** Unified portal public URL (reset links, invite links). */
   WEB_URL: z.string().url().default("http://localhost:3000"),
+  /** Staff portal URL — used in welcome emails. Falls back to WEB_URL if unset. */
+  STAFF_WEB_URL: z.string().url().optional(),
   /** @deprecated use WEB_URL */
   BRAND_WEB_URL: z.string().url().optional(),
   /** @deprecated use WEB_URL */

@@ -33,6 +33,13 @@ export class SubmissionsService {
     if (role === UserRole.admin) {
       return null;
     }
+    if (role === UserRole.staff) {
+      const assignments = await this.prisma.staffBrandAssignment.findMany({
+        where: { staffUserId: userId },
+        select: { brandProfileId: true },
+      });
+      return assignments.map((a) => a.brandProfileId);
+    }
     const brandProfileId =
       await this.campaignAccess.getBrandProfileIdForUser(userId);
     return brandProfileId ? [brandProfileId] : [];

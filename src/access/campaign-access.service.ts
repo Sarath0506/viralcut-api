@@ -34,12 +34,21 @@ export class CampaignAccessService {
 
     if (role === UserRole.brand) {
       const brandProfileId = await this.getBrandProfileIdForUser(userId);
-      if (
-        brandProfileId &&
-        campaign.brandProfileId === brandProfileId
-      ) {
+      if (brandProfileId && campaign.brandProfileId === brandProfileId) {
         return;
       }
+    }
+
+    if (role === UserRole.staff && campaign.brandProfileId) {
+      const assignment = await this.prisma.staffBrandAssignment.findUnique({
+        where: {
+          staffUserId_brandProfileId: {
+            staffUserId: userId,
+            brandProfileId: campaign.brandProfileId,
+          },
+        },
+      });
+      if (assignment) return;
     }
 
     throw new ForbiddenException({

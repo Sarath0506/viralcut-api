@@ -72,6 +72,15 @@ export class EmailService {
     );
   }
 
+  async sendStaffWelcome(email: string, name: string, password: string): Promise<void> {
+    const staffUrl = this.config.get("STAFF_WEB_URL", { infer: true });
+    const baseUrl = staffUrl ? staffUrl.replace(/\/$/, "") : this.webBaseUrl();
+    const loginUrl = `${baseUrl}/login`;
+    const subject = "Welcome to ViralCut — Your Staff Account";
+    const text = `Hi ${name},\n\nYour ViralCut staff account has been created.\n\nLogin URL: ${loginUrl}\nEmail: ${email}\nPassword: ${password}\n\nYou will be able to manage the brands assigned to you.\n\nTeam ViralCut`;
+    await this.sendMail(email, subject, text, `staff welcome for ${email}`);
+  }
+
   private getResendClient(): Resend {
     if (!this.resendClient) {
       this.resendClient = new Resend(this.config.get("RESEND_API_KEY"));

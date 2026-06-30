@@ -13,9 +13,10 @@ import {
 
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
+import { ApifyService } from "../common/apify.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
-import { GOOGLE_DRIVE_URL_MESSAGE, isGoogleDriveUrl } from "./drive-url";
+import { DRAFT_URL_MESSAGE, isValidDraftUrl } from "./drive-url";
 import { ReviewDeliverableAction } from "./dto/review-deliverable.dto";
 import type { SubmitDraftDto } from "./dto/submit-draft.dto";
 import type { SubmitLiveProofDto } from "./dto/submit-live-proof.dto";
@@ -68,6 +69,7 @@ export class ParticipationService {
     private readonly prisma: PrismaService,
     private readonly campaignAccess: CampaignAccessService,
     private readonly realtime: RealtimeService,
+    private readonly apify: ApifyService,
   ) {}
 
   private deliverableEventPayload(
@@ -112,7 +114,18 @@ export class ParticipationService {
     }));
   }
 
-  private formatDeliverable(d: ParticipationWithRelations["deliverables"][0]) {
+  private formatDeliverable(
+    d: ParticipationWithRelations["deliverables"][0],
+    campaign?: { ratePer1kPaise: number; maxPayoutPaise: number },
+  ) {
+    const ratePer1kPaise = campaign?.ratePer1kPaise ?? 0;
+    const estimatedPaise = ratePer1kPaise > 0
+      ? Math.min(
+          Math.floor((d.viewCount / 1000) * ratePer1kPaise),
+          campaign?.maxPayoutPaise ?? Infinity,
+        )
+      : 0;
+
     return {
       id: d.id,
       platform: d.platform,
@@ -123,6 +136,14 @@ export class ParticipationService {
       draftSubmittedAt: d.draftSubmittedAt?.toISOString() ?? null,
       draftReviewedAt: d.draftReviewedAt?.toISOString() ?? null,
       liveSubmittedAt: d.liveSubmittedAt?.toISOString() ?? null,
+      proofReviewedAt: d.proofReviewedAt?.toISOString() ?? null,
+      viewCount: d.viewCount,
+      reach: d.reach,
+      likeCount: d.likeCount,
+      commentCount: d.commentCount,
+      shareCount: d.shareCount,
+      estimatedPaise,
+      ratePer1kPaise,
       rejectionHistory: this.formatRejectionHistory(d.rejectionEvents),
     };
   }
@@ -154,7 +175,7 @@ export class ParticipationService {
         maxPayoutPaise: participation.campaign.maxPayoutPaise,
       },
       deliverables: participation.deliverables.map((d) =>
-        this.formatDeliverable(d),
+        this.formatDeliverable(d, participation.campaign),
       ),
     };
   }
@@ -287,10 +308,10 @@ export class ParticipationService {
       });
     }
 
-    if (!isGoogleDriveUrl(dto.draftDriveUrl)) {
+    if (!isValidDraftUrl(dto.draftDriveUrl)) {
       throw new BadRequestException({
         code: "VALIDATION_ERROR",
-        message: GOOGLE_DRIVE_URL_MESSAGE,
+        message: DRAFT_URL_MESSAGE,
       });
     }
 
@@ -365,7 +386,7 @@ export class ParticipationService {
       where: { id: deliverableId },
       data: {
         livePostUrl: dto.livePostUrl.trim(),
-        status: FormatDeliverableStatus.live_submitted,
+        status: FormatDeliverableStatus.proof_under_review,
         liveSubmittedAt: new Date(),
       },
     });
@@ -428,6 +449,13 @@ export class ParticipationService {
     if (role === UserRole.admin) {
       return null;
     }
+    if (role === UserRole.staff) {
+      const assignments = await this.prisma.staffBrandAssignment.findMany({
+        where: { staffUserId: userId },
+        select: { brandProfileId: true },
+      });
+      return assignments.map((a) => a.brandProfileId);
+    }
     const brandProfileId =
       await this.campaignAccess.getBrandProfileIdForUser(userId);
     return brandProfileId ? [brandProfileId] : [];
@@ -443,12 +471,18 @@ export class ParticipationService {
       return [];
     }
 
-    const status =
-      filters?.status ?? FormatDeliverableStatus.under_review;
+    // When fetching by campaignId with no explicit status, return all statuses.
+    // Otherwise default to under_review for the global submissions list.
+    const statusFilter =
+      filters?.status
+        ? { status: filters.status }
+        : filters?.campaignId
+          ? {}
+          : { status: FormatDeliverableStatus.under_review };
 
     const deliverables = await this.prisma.formatDeliverable.findMany({
       where: {
-        status,
+        ...statusFilter,
         ...(filters?.campaignId
           ? {
               participation: { campaignId: filters.campaignId },
@@ -683,6 +717,115 @@ export class ParticipationService {
         participation: { creatorId },
       },
     });
+  }
+
+  async approveProof(adminUserId: string, deliverableId: string) {
+    const deliverable = await this.prisma.formatDeliverable.findUnique({
+      where: { id: deliverableId },
+      include: { participation: { include: { campaign: true } } },
+    });
+
+    if (!deliverable) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Deliverable not found" });
+    }
+
+    const reviewable: FormatDeliverableStatus[] = [
+      FormatDeliverableStatus.proof_under_review,
+      FormatDeliverableStatus.live_submitted,
+    ];
+    if (!reviewable.includes(deliverable.status)) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "Proof can only be approved when it is under review",
+      });
+    }
+
+    const updated = await this.prisma.formatDeliverable.update({
+      where: { id: deliverableId },
+      data: {
+        status: FormatDeliverableStatus.proof_approved,
+        proofReviewedAt: new Date(),
+        reviewedByUserId: adminUserId,
+      },
+    });
+
+    this.realtime.emitDeliverableLiveProof(
+      this.deliverableEventPayload(updated, deliverable.participation),
+    );
+
+    return { id: updated.id, status: updated.status };
+  }
+
+  async rejectProof(adminUserId: string, deliverableId: string, reason: string) {
+    const deliverable = await this.prisma.formatDeliverable.findUnique({
+      where: { id: deliverableId },
+      include: { participation: { include: { campaign: true } } },
+    });
+
+    if (!deliverable) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Deliverable not found" });
+    }
+
+    const updated = await this.prisma.formatDeliverable.update({
+      where: { id: deliverableId },
+      data: {
+        status: FormatDeliverableStatus.proof_rejected,
+        rejectionReason: reason,
+        proofReviewedAt: new Date(),
+        reviewedByUserId: adminUserId,
+      },
+    });
+
+    this.realtime.emitDeliverableLiveProof(
+      this.deliverableEventPayload(updated, deliverable.participation),
+    );
+
+    return { id: updated.id, status: updated.status };
+  }
+
+  async refreshDeliverableViews(creatorId: string, deliverableId: string) {
+    const deliverable = await this.prisma.formatDeliverable.findUnique({
+      where: { id: deliverableId },
+      include: { participation: true },
+    });
+
+    if (!deliverable || deliverable.participation.creatorId !== creatorId) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Deliverable not found" });
+    }
+
+    const proofStatuses: FormatDeliverableStatus[] = [
+      FormatDeliverableStatus.proof_under_review,
+      FormatDeliverableStatus.proof_approved,
+      FormatDeliverableStatus.live_submitted,
+    ];
+    if (!proofStatuses.includes(deliverable.status) || !deliverable.livePostUrl) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "Views can only be refreshed after live proof is submitted",
+      });
+    }
+
+    const metrics = await this.apify.getViewCount(deliverable.livePostUrl);
+
+    const updated = await this.prisma.formatDeliverable.update({
+      where: { id: deliverableId },
+      data: {
+        viewCount:    metrics.viewCount,
+        reach:        metrics.reach,
+        likeCount:    metrics.likeCount,
+        commentCount: metrics.commentCount,
+        shareCount:   metrics.shareCount,
+      },
+    });
+
+    return {
+      id:           updated.id,
+      viewCount:    updated.viewCount,
+      reach:        updated.reach,
+      likeCount:    updated.likeCount,
+      commentCount: updated.commentCount,
+      shareCount:   updated.shareCount,
+    };
   }
 
   async countPendingReviewsForBrand(
