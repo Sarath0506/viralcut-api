@@ -454,4 +454,114 @@ export class SubmissionsService {
       totalViews: viewsAgg._sum.eligibleViews ?? 0,
     };
   }
+
+  /** Cross-campaign analytics overview — totals, per-campaign comparison, top creators. */
+  async getAnalyticsOverview(userId: string, role: UserRole) {
+    const brandProfileIds = await this.resolveBrandProfileIds(userId, role);
+    if (brandProfileIds && brandProfileIds.length === 0) {
+      return {
+        totals: { totalViews: 0, totalLikes: 0, totalComments: 0, totalShares: 0, totalEarningsPaise: 0, totalCampaigns: 0, totalClippers: 0 },
+        campaigns: [],
+        topCreators: [],
+      };
+    }
+
+    const brandFilter = brandProfileIds ? { brandProfileId: { in: brandProfileIds } } : {};
+
+    const deliverables = await this.prisma.formatDeliverable.findMany({
+      where: { participation: { campaign: brandFilter } },
+      include: {
+        participation: {
+          include: {
+            campaign: { select: { id: true, title: true, status: true, ratePer1kPaise: true, maxPayoutPaise: true } },
+            creator: { select: { id: true, displayName: true, username: true } },
+          },
+        },
+      },
+    });
+
+    type CampaignAgg = { id: string; title: string; status: string; totalViews: number; totalEarningsPaise: number; clipperIds: Set<string> };
+    type CreatorAgg = { creatorId: string; creatorName: string; totalViews: number; totalLikes: number; totalComments: number; totalShares: number; totalEarningsPaise: number };
+
+    const campaignMap = new Map<string, CampaignAgg>();
+    const creatorMap = new Map<string, CreatorAgg>();
+    const allClipperIds = new Set<string>();
+    let totalViews = 0;
+    let totalLikes = 0;
+    let totalComments = 0;
+    let totalShares = 0;
+    let totalEarningsPaise = 0;
+
+    for (const d of deliverables) {
+      const campaign = d.participation.campaign;
+      const creator = d.participation.creator;
+      const estimatedPaise = campaign.ratePer1kPaise > 0
+        ? Math.min(Math.floor((d.viewCount / 1000) * campaign.ratePer1kPaise), campaign.maxPayoutPaise)
+        : 0;
+
+      totalViews += d.viewCount;
+      totalLikes += d.likeCount;
+      totalComments += d.commentCount;
+      totalShares += d.shareCount;
+      totalEarningsPaise += estimatedPaise;
+      allClipperIds.add(d.participationId);
+
+      let campaignEntry = campaignMap.get(campaign.id);
+      if (!campaignEntry) {
+        campaignEntry = { id: campaign.id, title: campaign.title, status: campaign.status, totalViews: 0, totalEarningsPaise: 0, clipperIds: new Set() };
+        campaignMap.set(campaign.id, campaignEntry);
+      }
+      campaignEntry.totalViews += d.viewCount;
+      campaignEntry.totalEarningsPaise += estimatedPaise;
+      campaignEntry.clipperIds.add(d.participationId);
+
+      let creatorEntry = creatorMap.get(creator.id);
+      if (!creatorEntry) {
+        creatorEntry = {
+          creatorId: creator.id,
+          creatorName: creator.displayName ?? creator.username ?? "Creator",
+          totalViews: 0,
+          totalLikes: 0,
+          totalComments: 0,
+          totalShares: 0,
+          totalEarningsPaise: 0,
+        };
+        creatorMap.set(creator.id, creatorEntry);
+      }
+      creatorEntry.totalViews += d.viewCount;
+      creatorEntry.totalLikes += d.likeCount;
+      creatorEntry.totalComments += d.commentCount;
+      creatorEntry.totalShares += d.shareCount;
+      creatorEntry.totalEarningsPaise += estimatedPaise;
+    }
+
+    const campaigns = Array.from(campaignMap.values())
+      .map((c) => ({
+        id: c.id,
+        title: c.title,
+        status: c.status,
+        totalViews: c.totalViews,
+        totalEarningsPaise: c.totalEarningsPaise,
+        clipperCount: c.clipperIds.size,
+      }))
+      .sort((a, b) => b.totalViews - a.totalViews);
+
+    const topCreators = Array.from(creatorMap.values())
+      .sort((a, b) => b.totalViews - a.totalViews)
+      .slice(0, 20);
+
+    return {
+      totals: {
+        totalViews,
+        totalLikes,
+        totalComments,
+        totalShares,
+        totalEarningsPaise,
+        totalCampaigns: campaignMap.size,
+        totalClippers: allClipperIds.size,
+      },
+      campaigns,
+      topCreators,
+    };
+  }
 }

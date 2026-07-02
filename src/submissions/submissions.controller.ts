@@ -13,6 +13,7 @@ import {
   SubmissionStatus,
   UserRole,
 } from "@prisma/client";
+import { IsString, MaxLength } from "class-validator";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
@@ -23,6 +24,12 @@ import { ReviewDeliverableDto } from "../participation/dto/review-deliverable.dt
 import { ParticipationService } from "../participation/participation.service";
 import { ReviewSubmissionDto } from "./dto/review-submission.dto";
 import { SubmissionsService } from "./submissions.service";
+
+class RejectProofDto {
+  @IsString()
+  @MaxLength(500)
+  reason!: string;
+}
 
 @ApiTags("submissions")
 @ApiBearerAuth()
@@ -38,6 +45,12 @@ export class SubmissionsController {
   @Get("stats")
   stats(@CurrentUser() user: AuthJwtPayload) {
     return this.submissions.brandStats(user.sub, user.role);
+  }
+
+  /** Must be registered before the `:id` routes below. */
+  @Get("analytics")
+  analyticsOverview(@CurrentUser() user: AuthJwtPayload) {
+    return this.submissions.getAnalyticsOverview(user.sub, user.role);
   }
 
   @Get()
@@ -83,6 +96,20 @@ export class SubmissionsController {
       dto.action,
       dto.rejectionReason,
     );
+  }
+
+  @Patch("deliverables/:id/approve-proof")
+  approveProof(@CurrentUser() user: AuthJwtPayload, @Param("id") id: string) {
+    return this.participation.approveProof(user.sub, user.role, id);
+  }
+
+  @Patch("deliverables/:id/reject-proof")
+  rejectProof(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Body() dto: RejectProofDto,
+  ) {
+    return this.participation.rejectProof(user.sub, user.role, id, dto.reason);
   }
 
   @Get(":id")

@@ -41,6 +41,7 @@ export class AdminService {
     pocName?: string;
     pocPhone?: string;
     pocEmail?: string;
+    logoUrl?: string;
   }) {
     const loginEmail = dto.companyEmail.toLowerCase().trim();
     const existing = await this.prisma.user.findUnique({ where: { email: loginEmail } });
@@ -67,6 +68,7 @@ export class AdminService {
           pocName: dto.pocName?.trim() || null,
           pocPhone: dto.pocPhone?.trim() || null,
           pocEmail: dto.pocEmail?.trim() || null,
+          logoUrl: dto.logoUrl?.trim() || null,
         },
       }),
       this.prisma.wallet.create({ data: { userId: user.id } }),

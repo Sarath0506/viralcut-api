@@ -461,6 +461,68 @@ export class ParticipationService {
     return brandProfileId ? [brandProfileId] : [];
   }
 
+  /** Public, unauthenticated read-only deliverables list for a campaign's share link. No phone numbers, no rate/budget fields. */
+  async getPublicDeliverables(campaignId: string) {
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id: campaignId },
+    });
+    if (!campaign || campaign.status === CampaignStatus.draft) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Campaign not available",
+      });
+    }
+
+    const deliverables = await this.prisma.formatDeliverable.findMany({
+      where: { participation: { campaignId } },
+      include: {
+        _count: { select: { rejectionEvents: true } },
+        participation: {
+          include: {
+            creator: { select: { id: true, displayName: true, username: true } },
+            deliverables: {
+              select: { id: true, platform: true, status: true },
+              orderBy: { platform: "asc" },
+            },
+          },
+        },
+      },
+      orderBy: { draftSubmittedAt: "desc" },
+    });
+
+    return deliverables.map((d) => {
+      const estimatedPaise = campaign.ratePer1kPaise > 0
+        ? Math.min(Math.floor((d.viewCount / 1000) * campaign.ratePer1kPaise), campaign.maxPayoutPaise)
+        : 0;
+      return {
+        id: d.id,
+        platform: d.platform,
+        status: d.status,
+        draftDriveUrl: d.draftDriveUrl,
+        livePostUrl: d.livePostUrl,
+        rejectionReason: d.rejectionReason,
+        draftSubmittedAt: d.draftSubmittedAt?.toISOString() ?? null,
+        participationId: d.participationId,
+        joinedAt: d.participation.joinedAt.toISOString(),
+        creatorName:
+          d.participation.creator.displayName ??
+          d.participation.creator.username ??
+          "Creator",
+        priorRejectionCount: d._count.rejectionEvents,
+        viewCount: d.viewCount,
+        likeCount: d.likeCount,
+        commentCount: d.commentCount,
+        shareCount: d.shareCount,
+        estimatedPaise,
+        siblingDeliverables: d.participation.deliverables.map((s) => ({
+          id: s.id,
+          platform: s.platform,
+          status: s.status,
+        })),
+      };
+    });
+  }
+
   async listDeliverablesForBrand(
     userId: string,
     role: UserRole,
@@ -500,7 +562,7 @@ export class ParticipationService {
         _count: { select: { rejectionEvents: true } },
         participation: {
           include: {
-            campaign: { select: { id: true, title: true } },
+            campaign: { select: { id: true, title: true, ratePer1kPaise: true, maxPayoutPaise: true } },
             creator: {
               select: { id: true, displayName: true, username: true },
             },
@@ -515,7 +577,15 @@ export class ParticipationService {
       take: 100,
     });
 
-    return deliverables.map((d) => ({
+    return deliverables.map((d) => {
+      const ratePer1kPaise = d.participation.campaign.ratePer1kPaise;
+      const estimatedPaise = ratePer1kPaise > 0
+        ? Math.min(
+            Math.floor((d.viewCount / 1000) * ratePer1kPaise),
+            d.participation.campaign.maxPayoutPaise,
+          )
+        : 0;
+      return {
       id: d.id,
       platform: d.platform,
       status: d.status,
@@ -524,17 +594,24 @@ export class ParticipationService {
       campaignId: d.participation.campaign.id,
       campaignTitle: d.participation.campaign.title,
       participationId: d.participationId,
+      joinedAt: d.participation.joinedAt.toISOString(),
       creatorName:
         d.participation.creator.displayName ??
         d.participation.creator.username ??
         "Creator",
       priorRejectionCount: d._count.rejectionEvents,
+      viewCount: d.viewCount,
+      likeCount: d.likeCount,
+      commentCount: d.commentCount,
+      shareCount: d.shareCount,
+      estimatedPaise,
       siblingDeliverables: d.participation.deliverables.map((s) => ({
         id: s.id,
         platform: s.platform,
         status: s.status,
       })),
-    }));
+      };
+    });
   }
 
   async getDeliverableForBrand(
@@ -584,6 +661,9 @@ export class ParticipationService {
       livePostUrl: deliverable.livePostUrl,
       rejectionReason: deliverable.rejectionReason,
       draftSubmittedAt: deliverable.draftSubmittedAt?.toISOString() ?? null,
+      draftReviewedAt: deliverable.draftReviewedAt?.toISOString() ?? null,
+      liveSubmittedAt: deliverable.liveSubmittedAt?.toISOString() ?? null,
+      proofReviewedAt: deliverable.proofReviewedAt?.toISOString() ?? null,
       participationId: deliverable.participationId,
       rejectionHistory: this.formatRejectionHistory(
         deliverable.rejectionEvents,
@@ -591,7 +671,9 @@ export class ParticipationService {
       campaign: {
         id: deliverable.participation.campaign.id,
         title: deliverable.participation.campaign.title,
+        status: deliverable.participation.campaign.status,
         ratePer1kDisplay: `₹${deliverable.participation.campaign.ratePer1kPaise / 100} / 1K views`,
+        budgetPaise: deliverable.participation.campaign.budgetPaise,
       },
       creator: deliverable.participation.creator,
       siblingDeliverables: deliverable.participation.deliverables.map((s) => ({
@@ -719,7 +801,7 @@ export class ParticipationService {
     });
   }
 
-  async approveProof(adminUserId: string, deliverableId: string) {
+  async approveProof(userId: string, role: UserRole, deliverableId: string) {
     const deliverable = await this.prisma.formatDeliverable.findUnique({
       where: { id: deliverableId },
       include: { participation: { include: { campaign: true } } },
@@ -728,6 +810,12 @@ export class ParticipationService {
     if (!deliverable) {
       throw new NotFoundException({ code: "NOT_FOUND", message: "Deliverable not found" });
     }
+
+    await this.campaignAccess.assertCanAccessCampaign(
+      userId,
+      role,
+      deliverable.participation.campaign,
+    );
 
     const reviewable: FormatDeliverableStatus[] = [
       FormatDeliverableStatus.proof_under_review,
@@ -745,7 +833,7 @@ export class ParticipationService {
       data: {
         status: FormatDeliverableStatus.proof_approved,
         proofReviewedAt: new Date(),
-        reviewedByUserId: adminUserId,
+        reviewedByUserId: userId,
       },
     });
 
@@ -756,7 +844,7 @@ export class ParticipationService {
     return { id: updated.id, status: updated.status };
   }
 
-  async rejectProof(adminUserId: string, deliverableId: string, reason: string) {
+  async rejectProof(userId: string, role: UserRole, deliverableId: string, reason: string) {
     const deliverable = await this.prisma.formatDeliverable.findUnique({
       where: { id: deliverableId },
       include: { participation: { include: { campaign: true } } },
@@ -766,13 +854,19 @@ export class ParticipationService {
       throw new NotFoundException({ code: "NOT_FOUND", message: "Deliverable not found" });
     }
 
+    await this.campaignAccess.assertCanAccessCampaign(
+      userId,
+      role,
+      deliverable.participation.campaign,
+    );
+
     const updated = await this.prisma.formatDeliverable.update({
       where: { id: deliverableId },
       data: {
         status: FormatDeliverableStatus.proof_rejected,
         rejectionReason: reason,
         proofReviewedAt: new Date(),
-        reviewedByUserId: adminUserId,
+        reviewedByUserId: userId,
       },
     });
 
