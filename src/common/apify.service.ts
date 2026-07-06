@@ -175,20 +175,44 @@ export class ApifyService {
   }
 
   private async fetchInstagramProfile(profileUrl: string): Promise<SocialProfileStats> {
-    const username = profileUrl.replace(/\/$/, "").split("/").pop() ?? "";
-    const items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
-      directUrls: [profileUrl],
-      resultsType: "details",
-      resultsLimit: 1,
-    });
-    const p = items[0] ?? {};
+    // Extract username from URL or raw input
+    const username = profileUrl
+      .replace(/\/$/, "")
+      .split("/")
+      .filter(Boolean)
+      .pop()
+      ?.split("?")[0] ?? "";
+
+    let items: any[] = [];
+
+    // Primary: use usernames field (more reliable than directUrls for profiles)
+    try {
+      items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
+        usernames: [username],
+        resultsType: "details",
+        resultsLimit: 1,
+      });
+    } catch (_) {
+      // Fallback to directUrls
+      items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
+        directUrls: [profileUrl],
+        resultsType: "details",
+        resultsLimit: 1,
+      });
+    }
+
+    if (!items.length) {
+      throw new Error(`Instagram: no profile found for "${username}". Account may be private or not exist.`);
+    }
+
+    const p = items[0];
     return {
       platform: "instagram",
       handle: p.username ?? username,
       displayName: p.fullName ?? p.name ?? null,
       followersCount: p.followersCount ?? p.followers ?? 0,
       followingCount: p.followsCount ?? p.following ?? 0,
-      postsCount: p.postsCount ?? p.mediaCount ?? 0,
+      postsCount: p.postsCount ?? p.mediaCount ?? p.igtvVideoCount ?? 0,
       profilePicUrl: p.profilePicUrl ?? p.profilePicUrlHD ?? null,
       bio: p.biography ?? null,
       fetchedAt: new Date().toISOString(),

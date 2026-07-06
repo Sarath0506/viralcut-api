@@ -65,6 +65,18 @@ export class UsersController {
     return this.users.updateProfile(user.sub, body);
   }
 
+  @Delete("me/social-stats/:platform")
+  async disconnectSocial(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("platform") platform: string,
+  ) {
+    const allowed = ["instagram", "youtube", "twitter"] as const;
+    if (!allowed.includes(platform as never)) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    return this.users.disconnectSocial(user.sub, platform);
+  }
+
   @Post("me/social-stats/:platform")
   async fetchSocialStats(
     @CurrentUser() user: AuthJwtPayload,

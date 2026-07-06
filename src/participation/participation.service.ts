@@ -1104,7 +1104,7 @@ export class ParticipationService {
   async refreshDeliverableViews(creatorId: string, deliverableId: string) {
     const deliverable = await this.prisma.formatDeliverable.findUnique({
       where: { id: deliverableId },
-      include: { participation: true },
+      include: { participation: { include: { campaign: true } } },
     });
 
     if (!deliverable || deliverable.participation.creatorId !== creatorId) {
@@ -1136,6 +1136,9 @@ export class ParticipationService {
       },
     });
 
+    // Auto-pause if the campaign budget pool is now full
+    await this._autoPauseCampaignIfPoolFull(deliverable.participation.campaign);
+
     return {
       id:           updated.id,
       viewCount:    updated.viewCount,
@@ -1144,6 +1147,45 @@ export class ParticipationService {
       commentCount: updated.commentCount,
       shareCount:   updated.shareCount,
     };
+  }
+
+  private async _autoPauseCampaignIfPoolFull(campaign: {
+    id: string;
+    status: CampaignStatus;
+    budgetPaise: number;
+    brandProfileId: string | null;
+  }): Promise<void> {
+    if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) return;
+
+    const rows = await this.prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COALESCE(SUM(
+        COALESCE(
+          fd.paid_amount_paise,
+          LEAST(
+            FLOOR(fd.view_count::numeric * c.rate_per_1k_paise::numeric / 1000),
+            c.max_payout_paise::numeric
+          )
+        )
+      ), 0) AS total
+      FROM campaign_participations cp
+      JOIN format_deliverables fd ON fd.participation_id = cp.id
+      JOIN campaigns c ON c.id = cp.campaign_id
+      WHERE cp.campaign_id = ${campaign.id}
+    `;
+
+    const budgetUsed = Number(rows[0]?.total ?? 0);
+    if (budgetUsed < campaign.budgetPaise) return;
+
+    await this.prisma.campaign.update({
+      where: { id: campaign.id },
+      data: { status: CampaignStatus.paused },
+    });
+
+    this.realtime.emitCampaignUpdated({
+      id: campaign.id,
+      status: CampaignStatus.paused,
+      brandProfileId: campaign.brandProfileId,
+    });
   }
 
   async countPendingReviewsForBrand(

@@ -216,13 +216,48 @@ export class UsersService {
     return { platform, handle: handleOrUrl, status: "fetching" };
   }
 
+  async disconnectSocial(userId: string, platform: string) {
+    const existing = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { socialLinks: true, socialStats: true },
+    });
+    const links = { ...((existing?.socialLinks as Record<string, string> | null) ?? {}) };
+    const stats = { ...((existing?.socialStats as Record<string, unknown> | null) ?? {}) };
+    delete links[platform];
+    delete stats[platform];
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        socialLinks: Object.keys(links).length ? (links as Prisma.InputJsonValue) : Prisma.DbNull,
+        socialStats: Object.keys(stats).length ? (stats as Prisma.InputJsonValue) : Prisma.DbNull,
+      },
+    });
+    return { platform, status: "disconnected" };
+  }
+
   private async _scrapeAndStoreStats(
     userId: string,
     platform: "instagram" | "youtube" | "twitter",
     handleOrUrl: string,
   ) {
-    const stats = await this.apify.getSocialProfileStats(platform, handleOrUrl);
-    if (!stats) return;
+    let stats = await this.apify.getSocialProfileStats(platform, handleOrUrl);
+
+    // If Apify fails entirely, save a minimal fallback so the user isn't stuck
+    // in "pending" state indefinitely — shows as connected with 0 stats.
+    if (!stats) {
+      const handle = handleOrUrl.trim().replace(/^@/, "").split("/").filter(Boolean).pop()?.split("?")[0] ?? handleOrUrl;
+      stats = {
+        platform,
+        handle,
+        displayName: null,
+        followersCount: 0,
+        followingCount: 0,
+        postsCount: 0,
+        profilePicUrl: null,
+        bio: null,
+        fetchedAt: new Date().toISOString(),
+      };
+    }
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
