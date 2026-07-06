@@ -13,8 +13,8 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { UserRole } from "@prisma/client";
-import { IsEmail, IsOptional, IsString, MinLength } from "class-validator";
+import { StaffAccessLevel, UserRole } from "@prisma/client";
+import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from "class-validator";
 import { memoryStorage } from "multer";
 
 import { CampaignInviteService } from "../auth/campaign-invite.service";
@@ -31,6 +31,15 @@ import { AdminService } from "./admin.service";
 class SendCampaignInviteDto {
   @IsEmail()
   email!: string;
+}
+
+class ReviewKycDto {
+  @IsEnum(["approve", "reject"])
+  action!: "approve" | "reject";
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }
 
 class CreateBrandDto {
@@ -67,6 +76,12 @@ class CreateTeamMemberDto {
   @IsString()
   @MinLength(8)
   password!: string;
+}
+
+class AssignBrandDto {
+  @IsOptional()
+  @IsEnum(StaffAccessLevel)
+  accessLevel?: StaffAccessLevel;
 }
 
 @ApiTags("admin")
@@ -123,6 +138,21 @@ export class AdminController {
     return this.admin.getBrand(id);
   }
 
+  @Get("creators")
+  listCreators() {
+    return this.admin.listCreators();
+  }
+
+  @Get("creators/:id")
+  getCreator(@Param("id") id: string) {
+    return this.admin.getCreatorDetail(id);
+  }
+
+  @Post("creators/:id/kyc-review")
+  reviewKyc(@Param("id") id: string, @Body() body: ReviewKycDto) {
+    return this.admin.reviewKyc(id, body.action, body.reason);
+  }
+
   @Get("campaigns")
   listCampaigns(@Query() query: ListCampaignsQueryDto) {
     return this.admin.listCampaigns(query);
@@ -161,12 +191,52 @@ export class AdminController {
   }
 
   @Post("team-members/:staffId/brands/:brandId")
-  assignBrand(@Param("staffId") staffId: string, @Param("brandId") brandId: string) {
-    return this.admin.assignBrandToStaff(staffId, brandId);
+  assignBrand(
+    @Param("staffId") staffId: string,
+    @Param("brandId") brandId: string,
+    @Body() dto: AssignBrandDto,
+  ) {
+    return this.admin.assignBrandToStaff(staffId, brandId, dto.accessLevel);
   }
 
   @Delete("team-members/:staffId/brands/:brandId")
-  removeBrand(@Param("staffId") staffId: string, @Param("brandId") brandId: string) {
+  removeBrand(
+    @Param("staffId") staffId: string,
+    @Param("brandId") brandId: string,
+  ) {
     return this.admin.removeBrandFromStaff(staffId, brandId);
+  }
+
+  @Post("team-members/:staffId/deactivate")
+  deactivateStaff(@Param("staffId") staffId: string) {
+    return this.admin.deactivateStaff(staffId);
+  }
+
+  @Post("team-members/:staffId/reactivate")
+  reactivateStaff(@Param("staffId") staffId: string) {
+    return this.admin.reactivateStaff(staffId);
+  }
+
+  @Get("team-members/:staffId/activity")
+  getStaffActivity(@Param("staffId") staffId: string) {
+    return this.admin.getStaffActivity(staffId);
+  }
+
+  @Get("campaigns/:id/payouts")
+  getCampaignPayouts(@Param("id") campaignId: string) {
+    return this.admin.getCampaignPayouts(campaignId);
+  }
+
+  @Post("campaigns/:id/payouts/all")
+  payoutAllCreators(@Param("id") campaignId: string) {
+    return this.admin.payoutCampaign(campaignId);
+  }
+
+  @Post("campaigns/:id/payouts/creator/:creatorId")
+  payoutOneCreator(
+    @Param("id") campaignId: string,
+    @Param("creatorId") creatorId: string,
+  ) {
+    return this.admin.payoutCampaign(campaignId, creatorId);
   }
 }

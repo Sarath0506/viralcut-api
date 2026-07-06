@@ -3,9 +3,11 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from "class-validator";
 
 export class CreatePayoutMethodDto {
@@ -19,11 +21,25 @@ export class CreatePayoutMethodDto {
   @MaxLength(80)
   label!: string;
 
-  @ApiProperty({ description: "Full account number or UPI id — stored masked server-side" })
+  @ApiProperty({ example: "Ravi Kumar", description: "Name on the bank account or UPI-linked account" })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(100)
+  accountHolderName!: string;
+
+  @ApiProperty({ description: "Full account number or UPI id — stored server-side, shown masked to the creator" })
   @IsString()
   @MinLength(4)
   @MaxLength(64)
   account!: string;
+
+  @ApiPropertyOptional({ example: "HDFC0001234", description: "Required for bank accounts, ignored for UPI" })
+  @ValidateIf((dto: CreatePayoutMethodDto) => dto.type === "bank")
+  @IsString()
+  @Matches(/^[A-Z]{4}0[A-Z0-9]{6}$/, {
+    message: "ifscCode must be a valid IFSC code (e.g. HDFC0001234)",
+  })
+  ifscCode?: string;
 }
 
 export class CreateWithdrawalDto {
@@ -54,7 +70,13 @@ export class PayoutMethodDto {
   label!: string;
 
   @ApiProperty()
+  accountHolderName!: string;
+
+  @ApiProperty()
   accountMasked!: string;
+
+  @ApiPropertyOptional()
+  ifscCode?: string | null;
 
   @ApiProperty()
   isDefault!: boolean;

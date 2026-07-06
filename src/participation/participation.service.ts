@@ -11,9 +11,13 @@ import {
   UserRole,
 } from "@prisma/client";
 
+import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
 import { ApifyService } from "../common/apify.service";
+import { computeEstimatedPaise } from "../common/earnings";
+import { CreatorProfilesService } from "../creator-profiles/creator-profiles.service";
+import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
 import { DRAFT_URL_MESSAGE, isValidDraftUrl } from "./drive-url";
@@ -28,6 +32,17 @@ import {
   isDuplicateRejectionReason,
   REJECTION_HISTORY_LIMIT,
 } from "./rejection-reason";
+
+function formatPlatform(platform: string): string {
+  const labels: Record<string, string> = {
+    instagram_reel: "Instagram Reel",
+    instagram_reels: "Instagram Reel",
+    instagram_post: "Instagram Post",
+    youtube_shorts: "YouTube Shorts",
+    twitter_tweet: "Twitter / X",
+  };
+  return labels[platform] ?? platform.replace(/_/g, " ");
+}
 
 const rejectionEventsInclude = {
   orderBy: { rejectedAt: "desc" as const },
@@ -51,6 +66,9 @@ const participationInclude = {
       brandProfile: { select: { companyName: true, logoUrl: true } },
     },
   },
+  creatorProfile: {
+    select: { id: true, platform: true, handle: true, label: true, avatarUrl: true },
+  },
   deliverables: {
     orderBy: { platform: "asc" as const },
     include: {
@@ -70,6 +88,9 @@ export class ParticipationService {
     private readonly campaignAccess: CampaignAccessService,
     private readonly realtime: RealtimeService,
     private readonly apify: ApifyService,
+    private readonly activityLog: ActivityLogService,
+    private readonly notifications: InAppNotificationService,
+    private readonly creatorProfiles: CreatorProfilesService,
   ) {}
 
   private deliverableEventPayload(
@@ -159,6 +180,13 @@ export class ParticipationService {
       joinedAt: participation.joinedAt.toISOString(),
       platformsSnapshot: participation.platformsSnapshot,
       summary,
+      creatorProfile: {
+        id: participation.creatorProfile.id,
+        platform: participation.creatorProfile.platform,
+        handle: participation.creatorProfile.handle,
+        label: participation.creatorProfile.label,
+        avatarUrl: participation.creatorProfile.avatarUrl,
+      },
       campaign: {
         id: participation.campaign.id,
         title: participation.campaign.title,
@@ -172,6 +200,7 @@ export class ParticipationService {
         brandLogoUrl: participation.campaign.brandProfile?.logoUrl ?? null,
         coverImageUrl: participation.campaign.coverImageUrl ?? null,
         ratePer1kDisplay: `₹${participation.campaign.ratePer1kPaise / 100} / 1K views`,
+        ratePer1kPaise: participation.campaign.ratePer1kPaise,
         maxPayoutPaise: participation.campaign.maxPayoutPaise,
       },
       deliverables: participation.deliverables.map((d) =>
@@ -205,7 +234,13 @@ export class ParticipationService {
     }
   }
 
-  async joinCampaign(creatorId: string, campaignId: string) {
+  async joinCampaign(
+    creatorId: string,
+    campaignId: string,
+    creatorProfileId: string,
+  ) {
+    await this.creatorProfiles.assertOwnership(creatorId, creatorProfileId);
+
     const campaign = await this.prisma.campaign.findFirst({
       where: { id: campaignId },
     });
@@ -218,14 +253,14 @@ export class ParticipationService {
 
     const existing = await this.prisma.campaignParticipation.findUnique({
       where: {
-        campaignId_creatorId: { campaignId, creatorId },
+        campaignId_creatorProfileId: { campaignId, creatorProfileId },
       },
       include: participationInclude,
     });
     if (existing) {
       throw new ConflictException({
         code: "ALREADY_JOINED",
-        message: "Already joined this campaign",
+        message: "This profile already joined this campaign",
         details: { participation: this.formatParticipation(existing) },
       });
     }
@@ -239,6 +274,7 @@ export class ParticipationService {
       data: {
         campaignId,
         creatorId,
+        creatorProfileId,
         platformsSnapshot: platforms,
         deliverables: {
           create: platforms.map((platform) => ({
@@ -260,10 +296,15 @@ export class ParticipationService {
     return this.formatParticipation(participation);
   }
 
-  async getParticipationByCampaign(creatorId: string, campaignId: string) {
+  async getParticipationByCampaign(
+    creatorId: string,
+    campaignId: string,
+    creatorProfileId: string,
+  ) {
     const participation = await this.loadParticipation({
       campaignId,
       creatorId,
+      creatorProfileId,
     });
     return this.formatParticipation(participation);
   }
@@ -425,6 +466,7 @@ export class ParticipationService {
         coverImageUrl: p.campaign.coverImageUrl,
         platforms: p.campaign.platforms,
         joinedAt: p.joinedAt,
+        creatorProfile: p.creatorProfile,
         deliverables: p.deliverables.map((d) => ({
           id: d.id,
           platform: d.platform,
@@ -595,6 +637,7 @@ export class ParticipationService {
       campaignTitle: d.participation.campaign.title,
       participationId: d.participationId,
       joinedAt: d.participation.joinedAt.toISOString(),
+      creatorId: d.participation.creator.id,
       creatorName:
         d.participation.creator.displayName ??
         d.participation.creator.username ??
@@ -711,6 +754,7 @@ export class ParticipationService {
       userId,
       role,
       deliverable.participation.campaign,
+      { requireWrite: true },
     );
 
     if (deliverable.status !== FormatDeliverableStatus.under_review) {
@@ -733,6 +777,18 @@ export class ParticipationService {
       this.realtime.emitDeliverableReviewed(
         this.deliverableEventPayload(updated, deliverable.participation),
       );
+      await this.activityLog.log(userId, "submission.approved", {
+        targetType: "FormatDeliverable",
+        targetId: updated.id,
+        brandProfileId: deliverable.participation.campaign.brandProfileId ?? undefined,
+        metadata: { campaignTitle: deliverable.participation.campaign.title, platform: updated.platform },
+      });
+      await this.notifications.create(deliverable.participation.creatorId, "creator", {
+        type: "draft_approved",
+        title: "Draft approved 🎉",
+        body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} was approved. Post it live and submit the link to get paid.`,
+        link: `/participations/${deliverable.participation.id}`,
+      });
       return { id: updated.id, status: updated.status };
     }
 
@@ -789,6 +845,18 @@ export class ParticipationService {
     this.realtime.emitDeliverableReviewed(
       this.deliverableEventPayload(updated, deliverable.participation),
     );
+    await this.activityLog.log(userId, "submission.rejected", {
+      targetType: "FormatDeliverable",
+      targetId: updated.id,
+      brandProfileId: deliverable.participation.campaign.brandProfileId ?? undefined,
+      metadata: { campaignTitle: deliverable.participation.campaign.title, platform: updated.platform, reason: trimmedReason },
+    });
+    await this.notifications.create(deliverable.participation.creatorId, "creator", {
+      type: "draft_rejected",
+      title: "Draft needs changes",
+      body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes: ${trimmedReason}`,
+      link: `/participations/${deliverable.participation.id}`,
+    });
     return { id: updated.id, status: updated.status };
   }
 
@@ -799,6 +867,136 @@ export class ParticipationService {
         participation: { creatorId },
       },
     });
+  }
+
+  async getLeaderboard(
+    campaignId: string,
+    currentCreatorProfileId?: string,
+    limit = 20,
+  ) {
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { ratePer1kPaise: true, maxPayoutPaise: true },
+    });
+    if (!campaign) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Campaign not found" });
+    }
+
+    const participations = await this.prisma.campaignParticipation.findMany({
+      where: { campaignId },
+      include: {
+        creator: {
+          select: { id: true, displayName: true, username: true, avatarUrl: true },
+        },
+        creatorProfile: {
+          select: { id: true, platform: true, handle: true, label: true },
+        },
+        deliverables: { select: { viewCount: true, paidAmountPaise: true } },
+      },
+    });
+
+    // Each linked profile competes independently, so the same person can
+    // appear more than once here (once per profile that joined).
+    const entries = participations.map((p) => {
+      const totalViews = p.deliverables.reduce((sum, d) => sum + d.viewCount, 0);
+      const totalEarnedPaise = p.deliverables.reduce(
+        (sum, d) =>
+          sum +
+          (d.paidAmountPaise ??
+            computeEstimatedPaise(d.viewCount, campaign.ratePer1kPaise, campaign.maxPayoutPaise)),
+        0,
+      );
+      return {
+        creatorId: p.creator.id,
+        creatorProfileId: p.creatorProfile.id,
+        displayName:
+          p.creatorProfile.label ??
+          p.creator.displayName ??
+          p.creator.username ??
+          "Creator",
+        handle: p.creatorProfile.handle,
+        platform: p.creatorProfile.platform,
+        avatarUrl: p.creator.avatarUrl,
+        totalViews,
+        totalEarnedPaise,
+      };
+    });
+
+    entries.sort((a, b) => b.totalViews - a.totalViews);
+    const ranked = entries.map((e, i) => ({ ...e, rank: i + 1 }));
+    const currentUser = currentCreatorProfileId
+      ? ranked.find((e) => e.creatorProfileId === currentCreatorProfileId) ?? null
+      : null;
+
+    return {
+      campaignId,
+      totalParticipants: ranked.length,
+      entries: ranked.slice(0, limit),
+      currentUser,
+    };
+  }
+
+  async getOverallLeaderboard(currentUserId: string, limit = 20) {
+    const participations = await this.prisma.campaignParticipation.findMany({
+      include: {
+        creator: {
+          select: { id: true, displayName: true, username: true, avatarUrl: true },
+        },
+        campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
+        deliverables: { select: { viewCount: true, paidAmountPaise: true } },
+      },
+    });
+
+    const byCreator = new Map<
+      string,
+      {
+        creatorId: string;
+        displayName: string;
+        avatarUrl: string | null;
+        totalViews: number;
+        totalEarnedPaise: number;
+      }
+    >();
+
+    for (const p of participations) {
+      const totalViews = p.deliverables.reduce((sum, d) => sum + d.viewCount, 0);
+      const totalEarnedPaise = p.deliverables.reduce(
+        (sum, d) =>
+          sum +
+          (d.paidAmountPaise ??
+            computeEstimatedPaise(
+              d.viewCount,
+              p.campaign.ratePer1kPaise,
+              p.campaign.maxPayoutPaise,
+            )),
+        0,
+      );
+
+      const existing = byCreator.get(p.creatorId);
+      if (existing) {
+        existing.totalViews += totalViews;
+        existing.totalEarnedPaise += totalEarnedPaise;
+      } else {
+        byCreator.set(p.creatorId, {
+          creatorId: p.creator.id,
+          displayName: p.creator.displayName ?? p.creator.username ?? "Creator",
+          avatarUrl: p.creator.avatarUrl,
+          totalViews,
+          totalEarnedPaise,
+        });
+      }
+    }
+
+    const entries = [...byCreator.values()];
+    entries.sort((a, b) => b.totalViews - a.totalViews);
+    const ranked = entries.map((e, i) => ({ ...e, rank: i + 1 }));
+    const currentUser = ranked.find((e) => e.creatorId === currentUserId) ?? null;
+
+    return {
+      totalParticipants: ranked.length,
+      entries: ranked.slice(0, limit),
+      currentUser,
+    };
   }
 
   async approveProof(userId: string, role: UserRole, deliverableId: string) {
@@ -815,6 +1013,7 @@ export class ParticipationService {
       userId,
       role,
       deliverable.participation.campaign,
+      { requireWrite: true },
     );
 
     const reviewable: FormatDeliverableStatus[] = [
@@ -840,6 +1039,18 @@ export class ParticipationService {
     this.realtime.emitDeliverableLiveProof(
       this.deliverableEventPayload(updated, deliverable.participation),
     );
+    await this.activityLog.log(userId, "proof.approved", {
+      targetType: "FormatDeliverable",
+      targetId: updated.id,
+      brandProfileId: deliverable.participation.campaign.brandProfileId ?? undefined,
+      metadata: { campaignTitle: deliverable.participation.campaign.title, platform: updated.platform },
+    });
+    await this.notifications.create(deliverable.participation.creatorId, "creator", {
+      type: "proof_approved",
+      title: "Proof approved — payout on the way",
+      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was verified. Payout will be processed shortly.`,
+      link: `/participations/${deliverable.participation.id}`,
+    });
 
     return { id: updated.id, status: updated.status };
   }
@@ -858,6 +1069,7 @@ export class ParticipationService {
       userId,
       role,
       deliverable.participation.campaign,
+      { requireWrite: true },
     );
 
     const updated = await this.prisma.formatDeliverable.update({
@@ -873,6 +1085,18 @@ export class ParticipationService {
     this.realtime.emitDeliverableLiveProof(
       this.deliverableEventPayload(updated, deliverable.participation),
     );
+    await this.activityLog.log(userId, "proof.rejected", {
+      targetType: "FormatDeliverable",
+      targetId: updated.id,
+      brandProfileId: deliverable.participation.campaign.brandProfileId ?? undefined,
+      metadata: { campaignTitle: deliverable.participation.campaign.title, platform: updated.platform, reason },
+    });
+    await this.notifications.create(deliverable.participation.creatorId, "creator", {
+      type: "proof_rejected",
+      title: "Proof rejected",
+      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected: ${reason}`,
+      link: `/participations/${deliverable.participation.id}`,
+    });
 
     return { id: updated.id, status: updated.status };
   }

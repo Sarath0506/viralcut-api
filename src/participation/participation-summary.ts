@@ -18,7 +18,7 @@ export function computeParticipationSummary(
   deliverables: DeliverableSnapshot[],
   campaignStatus: CampaignStatus,
 ): ParticipationSummary {
-  if (campaignStatus !== CampaignStatus.live) {
+  if (campaignStatus === CampaignStatus.closed) {
     return "closed";
   }
 

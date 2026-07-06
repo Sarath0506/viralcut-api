@@ -37,6 +37,11 @@ export class CreatorParticipationController {
     private readonly storage: ObjectStorageService,
   ) {}
 
+  @Get("leaderboard")
+  getOverallLeaderboard(@CurrentUser() user: AuthJwtPayload) {
+    return this.participation.getOverallLeaderboard(user.sub);
+  }
+
   @Get("participations")
   list(
     @CurrentUser() user: AuthJwtPayload,

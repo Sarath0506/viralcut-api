@@ -83,6 +83,7 @@ export class SubmissionsService {
       mediaType: s.mediaType,
       campaignId: s.campaign.id,
       campaignTitle: s.campaign.title,
+      creatorId: s.creator.id,
       creatorName: s.creator.displayName ?? s.creator.username ?? "Creator",
       eligibleViews: s.eligibleViews,
       estimatedPaise: s.estimatedPaise,
@@ -165,6 +166,7 @@ export class SubmissionsService {
       userId,
       role,
       submission.campaign,
+      { requireWrite: true },
     );
 
     if (
@@ -352,7 +354,7 @@ export class SubmissionsService {
   }
 
   async creatorDashboard(userId: string) {
-    const [wallet, reviewCount, trending] = await Promise.all([
+    const [wallet, reviewCount, trending, user] = await Promise.all([
       this.prisma.wallet.findUnique({ where: { userId } }),
       this.participation.countUnderReviewForCreator(userId),
       this.prisma.campaign.findMany({
@@ -363,7 +365,10 @@ export class SubmissionsService {
           brandProfile: { select: { companyName: true, logoUrl: true } },
         },
       }),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { socialLinks: true } }),
     ]);
+
+    const links = (user?.socialLinks as Record<string, string> | null) ?? {};
 
     return {
       wallet: {
@@ -373,8 +378,9 @@ export class SubmissionsService {
       },
       clipsUnderReview: reviewCount,
       socialLinks: {
-        instagram: false,
-        youtube: false,
+        instagram: Boolean(links.instagram?.trim()),
+        youtube: Boolean(links.youtube?.trim()),
+        twitter: Boolean(links.twitter?.trim()),
       },
       trending: trending.map((c) => this.campaigns.formatCampaignForCreator(c)),
     };
@@ -473,15 +479,15 @@ export class SubmissionsService {
       include: {
         participation: {
           include: {
-            campaign: { select: { id: true, title: true, status: true, ratePer1kPaise: true, maxPayoutPaise: true } },
-            creator: { select: { id: true, displayName: true, username: true } },
+            campaign: { select: { id: true, title: true, status: true, ratePer1kPaise: true, maxPayoutPaise: true, coverImageUrl: true } },
+            creator: { select: { id: true, displayName: true, username: true, avatarUrl: true } },
           },
         },
       },
     });
 
-    type CampaignAgg = { id: string; title: string; status: string; totalViews: number; totalEarningsPaise: number; clipperIds: Set<string> };
-    type CreatorAgg = { creatorId: string; creatorName: string; totalViews: number; totalLikes: number; totalComments: number; totalShares: number; totalEarningsPaise: number };
+    type CampaignAgg = { id: string; title: string; status: string; coverImageUrl: string | null; totalViews: number; totalEarningsPaise: number; clipperIds: Set<string> };
+    type CreatorAgg = { creatorId: string; creatorName: string; avatarUrl: string | null; totalViews: number; totalLikes: number; totalComments: number; totalShares: number; totalEarningsPaise: number };
 
     const campaignMap = new Map<string, CampaignAgg>();
     const creatorMap = new Map<string, CreatorAgg>();
@@ -508,7 +514,7 @@ export class SubmissionsService {
 
       let campaignEntry = campaignMap.get(campaign.id);
       if (!campaignEntry) {
-        campaignEntry = { id: campaign.id, title: campaign.title, status: campaign.status, totalViews: 0, totalEarningsPaise: 0, clipperIds: new Set() };
+        campaignEntry = { id: campaign.id, title: campaign.title, status: campaign.status, coverImageUrl: campaign.coverImageUrl, totalViews: 0, totalEarningsPaise: 0, clipperIds: new Set() };
         campaignMap.set(campaign.id, campaignEntry);
       }
       campaignEntry.totalViews += d.viewCount;
@@ -520,6 +526,7 @@ export class SubmissionsService {
         creatorEntry = {
           creatorId: creator.id,
           creatorName: creator.displayName ?? creator.username ?? "Creator",
+          avatarUrl: creator.avatarUrl,
           totalViews: 0,
           totalLikes: 0,
           totalComments: 0,
@@ -540,6 +547,7 @@ export class SubmissionsService {
         id: c.id,
         title: c.title,
         status: c.status,
+        coverImageUrl: c.coverImageUrl,
         totalViews: c.totalViews,
         totalEarningsPaise: c.totalEarningsPaise,
         clipperCount: c.clipperIds.size,

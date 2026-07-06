@@ -14,6 +14,11 @@ export class ListCampaignsQueryDto {
   @IsEnum(CampaignStatus)
   status?: CampaignStatus;
 
+  @ApiPropertyOptional({ description: "Case-insensitive search on campaign title" })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
   @Type(() => Number)

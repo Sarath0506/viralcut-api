@@ -10,9 +10,11 @@ import {
   CampaignStatus,
   CampaignWizardStep,
   Prisma,
+  StaffAccessLevel,
   UserRole,
 } from "@prisma/client";
 
+import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
@@ -29,6 +31,7 @@ export class CampaignsService {
     private readonly prisma: PrismaService,
     private readonly campaignAccess: CampaignAccessService,
     private readonly realtime: RealtimeService,
+    private readonly activityLog: ActivityLogService,
   ) {}
 
   async listLiveForCreators() {
@@ -82,6 +85,7 @@ export class CampaignsService {
 
     const where: Prisma.CampaignWhereInput = {
       ...(query.status ? { status: query.status } : {}),
+      ...(query.search?.trim() ? { title: { contains: query.search.trim(), mode: "insensitive" } } : {}),
       ...(role === UserRole.brand && brandProfileId ? { brandProfileId } : {}),
       ...(role === UserRole.staff && staffBrandIds ? { brandProfileId: { in: staffBrandIds } } : {}),
     };
@@ -167,6 +171,12 @@ export class CampaignsService {
         if (!assignment) {
           throw new ForbiddenException({ code: "FORBIDDEN", message: "Not assigned to this brand" });
         }
+        if (assignment.accessLevel !== StaffAccessLevel.full) {
+          throw new ForbiddenException({
+            code: "FORBIDDEN",
+            message: "View-only access — cannot create campaigns for this brand",
+          });
+        }
       }
     } else {
       brandProfileId =
@@ -209,6 +219,8 @@ export class CampaignsService {
         category: dto.category,
         platform: platforms[0] ?? DEFAULT_CAMPAIGN_PLATFORM,
         platforms,
+        locationType: dto.locationType ?? "pan_india",
+        targetStates: dto.locationType === "states" ? (dto.targetStates ?? []) : [],
         status,
         brief,
         briefHook: dto.briefHook,
@@ -226,6 +238,12 @@ export class CampaignsService {
     });
 
     const formatted = this.formatCampaign(campaign);
+    await this.activityLog.log(userId, "campaign.created", {
+      targetType: "Campaign",
+      targetId: campaign.id,
+      brandProfileId: brandProfileId ?? undefined,
+      metadata: { title: campaign.title },
+    });
     if (isLive) {
       this.realtime.emitCampaignPublished(formatted);
     } else {
@@ -254,6 +272,7 @@ export class CampaignsService {
       userId,
       role,
       existing,
+      { requireWrite: true },
     );
 
     const nextStatus = dto.status ?? existing.status;
@@ -293,6 +312,13 @@ export class CampaignsService {
       ? normalizeCampaignPlatforms(dto.platforms)
       : undefined;
 
+    const targetStates =
+      dto.locationType === "pan_india"
+        ? []
+        : dto.locationType === "states"
+          ? (dto.targetStates ?? existing.targetStates)
+          : undefined;
+
     const campaign = await this.prisma.campaign.update({
       where: { id: campaignId },
       data: {
@@ -309,6 +335,8 @@ export class CampaignsService {
         coverImageUrl: dto.coverImageUrl,
         platforms,
         platform: platforms?.[0],
+        locationType: dto.locationType,
+        targetStates,
         productUrl: dto.productUrl,
         ratePer1kPaise: dto.ratePer1kPaise,
         maxPayoutPaise: dto.maxPayoutPaise,
@@ -345,6 +373,7 @@ export class CampaignsService {
       userId,
       role,
       existing,
+      { requireWrite: true },
     );
 
     if (
@@ -446,6 +475,8 @@ export class CampaignsService {
       category: campaign.category,
       platform: campaign.platform,
       platforms: campaign.platforms,
+      locationType: campaign.locationType,
+      targetStates: campaign.targetStates,
       status: campaign.status,
       brief: campaign.brief,
       briefHook: campaign.briefHook,
@@ -484,6 +515,8 @@ export class CampaignsService {
     category: string | null;
     platform: string;
     platforms: string[];
+    locationType: string;
+    targetStates: string[];
     status: CampaignStatus;
     brief: string;
     briefHook: string | null;
@@ -517,6 +550,8 @@ export class CampaignsService {
       category: c.category,
       platform: c.platform,
       platforms: c.platforms,
+      locationType: c.locationType,
+      targetStates: c.targetStates,
       status: c.status,
       brief: c.brief,
       briefHook: c.briefHook,

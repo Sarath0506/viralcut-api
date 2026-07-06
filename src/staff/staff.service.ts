@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { CampaignStatus, UserRole } from "@prisma/client";
+import { CampaignStatus, StaffAccessLevel, UserRole } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
@@ -72,7 +72,7 @@ export class StaffService {
   }
 
   async createCampaignForBrand(staffUserId: string, brandProfileId: string, dto: CreateCampaignDto) {
-    await this.assertAssigned(staffUserId, brandProfileId);
+    await this.assertAssigned(staffUserId, brandProfileId, { requireWrite: true });
     return this.campaigns.create(staffUserId, UserRole.admin, {
       ...dto,
       brandProfileId,
@@ -80,12 +80,22 @@ export class StaffService {
     });
   }
 
-  async assertAssigned(staffUserId: string, brandProfileId: string) {
+  async assertAssigned(
+    staffUserId: string,
+    brandProfileId: string,
+    opts?: { requireWrite?: boolean },
+  ) {
     const assignment = await this.prisma.staffBrandAssignment.findUnique({
       where: { staffUserId_brandProfileId: { staffUserId, brandProfileId } },
     });
     if (!assignment) {
       throw new ForbiddenException({ code: "FORBIDDEN", message: "Not assigned to this brand" });
+    }
+    if (opts?.requireWrite && assignment.accessLevel !== StaffAccessLevel.full) {
+      throw new ForbiddenException({
+        code: "FORBIDDEN",
+        message: "View-only access — cannot create campaigns for this brand",
+      });
     }
   }
 }

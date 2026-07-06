@@ -8,6 +8,6 @@ import { RealtimeService } from "./realtime.service";
 @Module({
   imports: [AccessModule, JwtModule],
   providers: [RealtimeGateway, RealtimeService],
-  exports: [RealtimeService],
+  exports: [RealtimeGateway, RealtimeService],
 })
 export class RealtimeModule {}

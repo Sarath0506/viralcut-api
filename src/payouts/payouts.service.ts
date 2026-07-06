@@ -14,6 +14,7 @@ function computeWithdrawalFeePaise(
 }
 
 import type { Env } from "../config/env";
+import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import type { CreatePayoutMethodDto, CreateWithdrawalDto } from "./dto/payout.dto";
 
@@ -22,6 +23,7 @@ export class PayoutsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
+    private readonly notifications: InAppNotificationService,
   ) {}
 
   maskAccount(account: string): string {
@@ -41,7 +43,9 @@ export class PayoutsService {
       id: m.id,
       type: m.type,
       label: m.label,
+      accountHolderName: m.accountHolderName,
       accountMasked: m.accountMasked,
+      ifscCode: m.ifscCode,
       isDefault: m.isDefault,
     }));
   }
@@ -55,6 +59,9 @@ export class PayoutsService {
         userId,
         type: dto.type,
         label: dto.label,
+        accountHolderName: dto.accountHolderName,
+        accountNumber: dto.account,
+        ifscCode: dto.type === "bank" ? dto.ifscCode : null,
         accountMasked: this.maskAccount(dto.account),
         isDefault,
       },
@@ -64,7 +71,9 @@ export class PayoutsService {
       id: method.id,
       type: method.type,
       label: method.label,
+      accountHolderName: method.accountHolderName,
       accountMasked: method.accountMasked,
+      ifscCode: method.ifscCode,
       isDefault: method.isDefault,
     };
   }
@@ -160,7 +169,7 @@ export class PayoutsService {
       });
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const completed = await this.prisma.$transaction(async (tx) => {
       const wallet = await tx.wallet.findUnique({ where: { userId } });
       if (!wallet || wallet.availablePaise < dto.amountPaise) {
         throw new BadRequestException({
@@ -198,16 +207,29 @@ export class PayoutsService {
         },
       });
 
-      const completed = await tx.withdrawal.update({
+      return tx.withdrawal.update({
         where: { id: withdrawal.id },
         data: {
           status: WithdrawalStatus.completed,
           processedAt: new Date(),
         },
       });
-
-      return this.formatWithdrawal(completed);
     });
+
+    await this.notifications.notifyAllAdmins({
+      type: "withdrawal.requested",
+      title: "Withdrawal requested",
+      body: `₹${(netPaise / 100).toFixed(2)} requested`,
+    });
+
+    await this.notifications.create(userId, "creator", {
+      type: "withdrawal_processed",
+      title: "Withdrawal processed",
+      body: `₹${(netPaise / 100).toFixed(2)} is on its way to your ${payoutMethod.label}.`,
+      link: "/wallet",
+    });
+
+    return this.formatWithdrawal(completed);
   }
 
   async listWithdrawals(userId: string, limit = 20) {

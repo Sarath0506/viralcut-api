@@ -8,6 +8,7 @@ import { validateEnv } from "./config/env";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { TransformInterceptor } from "./common/interceptors/transform.interceptor";
 import { AccessModule } from "./access/access.module";
+import { ActivityModule } from "./activity/activity.module";
 import { AdminModule } from "./admin/admin.module";
 import { StaffModule } from "./staff/staff.module";
 import { AuthModule } from "./auth/auth.module";
@@ -15,8 +16,11 @@ import { CampaignsModule } from "./campaigns/campaigns.module";
 import { HealthModule } from "./health/health.module";
 import { PayoutsModule } from "./payouts/payouts.module";
 import { CreatorModule } from "./creator/creator.module";
+import { CreatorProfilesModule } from "./creator-profiles/creator-profiles.module";
+import { CreatorsModule } from "./creators/creators.module";
 import { RealtimeModule } from "./realtime/realtime.module";
 import { SubmissionsModule } from "./submissions/submissions.module";
+import { TasksModule } from "./tasks/tasks.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { UsersModule } from "./users/users.module";
 import { WalletModule } from "./wallet/wallet.module";
@@ -49,6 +53,7 @@ import { WalletModule } from "./wallet/wallet.module";
     ]),
     PrismaModule,
     AccessModule,
+    ActivityModule,
     RealtimeModule,
     AuthModule,
     AdminModule,
@@ -59,6 +64,9 @@ import { WalletModule } from "./wallet/wallet.module";
     CampaignsModule,
     SubmissionsModule,
     CreatorModule,
+    CreatorProfilesModule,
+    CreatorsModule,
+    TasksModule,
     HealthModule,
   ],
   providers: [

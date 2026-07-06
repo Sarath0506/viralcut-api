@@ -9,13 +9,13 @@ const demoCreators = [
   {
     phone: "+919876543210",
     displayName: "Demo Creator",
-    email: "demo@viralcut.test",
+    email: "demo@halchal.test",
     username: "demo_creator",
   },
   {
     phone: "+919876543211",
     displayName: "Test Creator",
-    email: "test@viralcut.test",
+    email: "test@halchal.test",
     username: "test_creator",
   },
 ] as const;
