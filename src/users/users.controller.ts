@@ -1,8 +1,10 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
+  Param,
   Patch,
   Post,
   Req,
@@ -61,6 +63,26 @@ export class UsersController {
     @Body() body: UpdateProfileDto,
   ) {
     return this.users.updateProfile(user.sub, body);
+  }
+
+  @Post("me/social-stats/:platform")
+  async fetchSocialStats(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("platform") platform: string,
+    @Body("handle") handle: string,
+  ) {
+    const allowed = ["instagram", "youtube", "twitter"] as const;
+    if (!allowed.includes(platform as never)) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    if (!handle?.trim()) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "handle is required" });
+    }
+    return this.users.fetchAndStoreSocialStats(
+      user.sub,
+      platform as "instagram" | "youtube" | "twitter",
+      handle.trim(),
+    );
   }
 
   @Post("me/change-password")

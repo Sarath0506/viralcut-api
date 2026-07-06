@@ -206,6 +206,8 @@ model User {
 
   socialLinks  Json?     @map("social_links")
 
+  socialStats  Json?     @map("social_stats")
+
   username     String?   @unique
 
   fixedOtpCode String?   @map("fixed_otp_code") @db.VarChar(6)

@@ -7,6 +7,7 @@ import {
 import { KycStatus, Prisma, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 
+import { ApifyService } from "../common/apify.service";
 import { PrismaService } from "../prisma/prisma.service";
 
 const BADGE_THRESHOLDS_PAISE = [
@@ -45,7 +46,10 @@ export function computeStreakDays(liveSubmittedAts: Date[]): number {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly apify: ApifyService,
+  ) {}
 
   async getMe(userId: string, role: UserRole) {
     const user = await this.prisma.user.findUnique({
@@ -74,6 +78,7 @@ export class UsersService {
       companyName: user.brandProfile?.companyName ?? null,
       bio: user.bio,
       socialLinks: (user.socialLinks as Record<string, string> | null) ?? null,
+      socialStats: (user.socialStats as Record<string, unknown> | null) ?? null,
     };
 
     if (role === UserRole.brand && user.brandProfile) {
@@ -183,6 +188,54 @@ export class UsersService {
       }
       throw error;
     }
+  }
+
+  async fetchAndStoreSocialStats(
+    userId: string,
+    platform: "instagram" | "youtube" | "twitter",
+    handleOrUrl: string,
+  ) {
+    const existing = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { socialStats: true, socialLinks: true },
+    });
+
+    const currentLinks = (existing?.socialLinks as Record<string, string> | null) ?? {};
+
+    // Save the handle immediately so it persists even if scraping fails
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        socialLinks: { ...currentLinks, [platform]: handleOrUrl } as Prisma.InputJsonValue,
+      },
+    });
+
+    // Kick off Apify scraping in the background — don't block the response
+    this._scrapeAndStoreStats(userId, platform, handleOrUrl).catch(() => {});
+
+    return { platform, handle: handleOrUrl, status: "fetching" };
+  }
+
+  private async _scrapeAndStoreStats(
+    userId: string,
+    platform: "instagram" | "youtube" | "twitter",
+    handleOrUrl: string,
+  ) {
+    const stats = await this.apify.getSocialProfileStats(platform, handleOrUrl);
+    if (!stats) return;
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { socialStats: true },
+    });
+    const currentStats = (user?.socialStats as Record<string, unknown> | null) ?? {};
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        socialStats: { ...currentStats, [platform]: stats } as Prisma.InputJsonValue,
+      },
+    });
   }
 
   async submitKyc(userId: string, documentUrl: string, documentType: string) {

@@ -34,6 +34,31 @@ export class CampaignsService {
     private readonly activityLog: ActivityLogService,
   ) {}
 
+  private async fetchBudgetUsedMap(campaignIds: string[]): Promise<Record<string, number>> {
+    if (!campaignIds.length) return {};
+    // Use COALESCE(paid_amount_paise, estimated) so paid takes priority once processed;
+    // fall back to view-count-derived estimate for campaigns with no payouts yet.
+    const rows = await this.prisma.$queryRaw<{ campaign_id: string; total: bigint }[]>`
+      SELECT
+        cp.campaign_id,
+        COALESCE(SUM(
+          COALESCE(
+            fd.paid_amount_paise,
+            LEAST(
+              FLOOR(fd.view_count::numeric * c.rate_per_1k_paise::numeric / 1000),
+              c.max_payout_paise::numeric
+            )
+          )
+        ), 0) AS total
+      FROM campaign_participations cp
+      JOIN format_deliverables fd ON fd.participation_id = cp.id
+      JOIN campaigns c ON c.id = cp.campaign_id
+      WHERE cp.campaign_id = ANY(${campaignIds}::text[])
+      GROUP BY cp.campaign_id
+    `;
+    return Object.fromEntries(rows.map((r) => [r.campaign_id, Number(r.total)]));
+  }
+
   async listLiveForCreators() {
     const campaigns = await this.prisma.campaign.findMany({
       where: { status: CampaignStatus.live },
@@ -42,7 +67,10 @@ export class CampaignsService {
         brandProfile: { select: { companyName: true, logoUrl: true } },
       },
     });
-    return campaigns.map((c) => this.formatCampaignForCreator(c));
+    const budgetMap = await this.fetchBudgetUsedMap(campaigns.map((c) => c.id));
+    return campaigns.map((c) =>
+      this.formatCampaignForCreator({ ...c, budgetUsedPaise: budgetMap[c.id] ?? c.budgetUsedPaise }),
+    );
   }
 
   async getLiveForCreator(campaignId: string) {
@@ -58,7 +86,11 @@ export class CampaignsService {
         message: "Campaign not found",
       });
     }
-    return this.formatCampaignForCreator(campaign);
+    const budgetMap = await this.fetchBudgetUsedMap([campaign.id]);
+    return this.formatCampaignForCreator({
+      ...campaign,
+      budgetUsedPaise: budgetMap[campaign.id] ?? campaign.budgetUsedPaise,
+    });
   }
 
   async listForUser(
@@ -109,9 +141,10 @@ export class CampaignsService {
       }),
     ]);
 
+    const budgetMap = await this.fetchBudgetUsedMap(campaigns.map((c) => c.id));
     return {
       items: campaigns.map((c) => ({
-        ...this.formatCampaign(c),
+        ...this.formatCampaign({ ...c, budgetUsedPaise: budgetMap[c.id] ?? c.budgetUsedPaise }),
         brandCompanyName: c.brandProfile?.companyName ?? null,
         submissionCount: c._count.submissions,
         pendingInviteEmail: c.invites[0]?.email ?? null,
@@ -144,8 +177,9 @@ export class CampaignsService {
 
     await this.campaignAccess.assertCanAccessCampaign(userId, role, campaign);
 
+    const budgetMap = await this.fetchBudgetUsedMap([campaign.id]);
     return {
-      ...this.formatCampaign(campaign),
+      ...this.formatCampaign({ ...campaign, budgetUsedPaise: budgetMap[campaign.id] ?? campaign.budgetUsedPaise }),
       brandCompanyName: campaign.brandProfile?.companyName ?? null,
       submissionCount: campaign._count.submissions,
       pendingInviteEmail: campaign.invites[0]?.email ?? null,
