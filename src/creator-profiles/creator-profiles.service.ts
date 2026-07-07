@@ -144,18 +144,36 @@ export class CreatorProfilesService {
     platform: "instagram" | "youtube" | "twitter",
     handleOrUrl: string,
   ) {
-    const profile = await this.assertOwnership(userId, profileId);
+    const [profile, user] = await Promise.all([
+      this.assertOwnership(userId, profileId),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { socialStats: true },
+      }),
+    ]);
+
     const currentLinks = (profile.socialLinks as Record<string, string> | null) ?? {};
+    const currentProfileStats = (profile.socialStats as Record<string, unknown> | null) ?? {};
+    const userStats = (user?.socialStats as Record<string, unknown> | null) ?? {};
+    const existingStats = userStats[platform];
 
-    await this.prisma.creatorProfile.update({
-      where: { id: profileId },
-      data: { socialLinks: { ...currentLinks, [platform]: handleOrUrl } as Prisma.InputJsonValue },
-    });
+    const updateData: Prisma.CreatorProfileUpdateInput = {
+      socialLinks: { ...currentLinks, [platform]: handleOrUrl } as Prisma.InputJsonValue,
+    };
 
-    // Kick off Apify scraping in background — don't block the response
-    this._scrapeAndStoreStats(profileId, platform, handleOrUrl).catch(() => {});
+    // Copy stats from global user profile if they already exist — avoids waiting for Apify re-scrape
+    if (existingStats) {
+      updateData.socialStats = { ...currentProfileStats, [platform]: existingStats } as Prisma.InputJsonValue;
+    }
 
-    return { platform, handle: handleOrUrl, status: "fetching" };
+    await this.prisma.creatorProfile.update({ where: { id: profileId }, data: updateData });
+
+    if (!existingStats) {
+      // No existing stats — kick off Apify scraping in background
+      this._scrapeAndStoreStats(profileId, platform, handleOrUrl).catch(() => {});
+    }
+
+    return { platform, handle: handleOrUrl, status: existingStats ? "ready" : "fetching" };
   }
 
   async disconnectSocial(userId: string, profileId: string, platform: string) {
