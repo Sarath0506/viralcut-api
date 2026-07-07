@@ -201,7 +201,7 @@ export class ApifyService {
       });
     }
 
-    if (!items.length) {
+    if (!items.length || items[0]?.error) {
       throw new Error(`Instagram: no profile found for "${username}". Account may be private or not exist.`);
     }
 
