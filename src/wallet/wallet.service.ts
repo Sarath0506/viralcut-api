@@ -1,5 +1,7 @@
 import { Injectable } from "@nestjs/common";
+import { FormatDeliverableStatus } from "@prisma/client";
 
+import { computeEstimatedPaise } from "../common/earnings";
 import { PrismaService } from "../prisma/prisma.service";
 
 @Injectable()
@@ -14,12 +16,56 @@ export class WalletService {
     return wallet;
   }
 
+  // Earnings that are "in flight" — the creator has done their part
+  // (submitted live proof or had proof approved) but payout hasn't settled yet.
+  async computePendingPaise(creatorId: string): Promise<number> {
+    const pendingStatuses = [
+      FormatDeliverableStatus.live_submitted,
+      FormatDeliverableStatus.proof_under_review,
+      FormatDeliverableStatus.proof_approved,
+    ];
+    const deliverables = await this.prisma.formatDeliverable.findMany({
+      where: {
+        status: { in: pendingStatuses },
+        participation: { creatorId },
+      },
+      include: {
+        participation: {
+          include: {
+            campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
+          },
+        },
+      },
+    });
+    return deliverables.reduce((sum, d) => {
+      return sum + computeEstimatedPaise(
+        d.viewCount,
+        d.participation.campaign.ratePer1kPaise,
+        d.participation.campaign.maxPayoutPaise,
+      );
+    }, 0);
+  }
+
+  async countClipsUnderReview(creatorId: string): Promise<number> {
+    return this.prisma.formatDeliverable.count({
+      where: {
+        status: FormatDeliverableStatus.under_review,
+        participation: { creatorId },
+      },
+    });
+  }
+
   async getWallet(userId: string) {
-    const wallet = await this.getOrCreateWallet(userId);
+    const [wallet, pendingPaise, clipsUnderReview] = await Promise.all([
+      this.getOrCreateWallet(userId),
+      this.computePendingPaise(userId),
+      this.countClipsUnderReview(userId),
+    ]);
     return {
       availablePaise: wallet.availablePaise,
-      pendingPaise: wallet.pendingPaise,
+      pendingPaise,
       lifetimePaise: wallet.lifetimePaise,
+      clipsUnderReview,
     };
   }
 

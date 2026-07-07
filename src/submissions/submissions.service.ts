@@ -9,6 +9,7 @@ import { CampaignAccessService } from "../access/campaign-access.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
 import { ParticipationService } from "../participation/participation.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { WalletService } from "../wallet/wallet.service";
 import { ReviewAction, ReviewSubmissionDto } from "./dto/review-submission.dto";
 import type { CreateSubmissionDto } from "./dto/create-submission.dto";
 import type { SubmitLiveLinkDto } from "./dto/create-submission.dto";
@@ -24,6 +25,7 @@ export class SubmissionsService {
     private readonly campaignAccess: CampaignAccessService,
     private readonly campaigns: CampaignsService,
     private readonly participation: ParticipationService,
+    private readonly walletService: WalletService,
   ) {}
 
   private async resolveBrandProfileIds(
@@ -354,8 +356,9 @@ export class SubmissionsService {
   }
 
   async creatorDashboard(userId: string) {
-    const [wallet, reviewCount, trending, user] = await Promise.all([
+    const [wallet, pendingPaise, reviewCount, trending, user] = await Promise.all([
       this.prisma.wallet.findUnique({ where: { userId } }),
+      this.walletService.computePendingPaise(userId),
       this.participation.countUnderReviewForCreator(userId),
       this.prisma.campaign.findMany({
         where: { status: CampaignStatus.live },
@@ -373,7 +376,7 @@ export class SubmissionsService {
     return {
       wallet: {
         availablePaise: wallet?.availablePaise ?? 0,
-        pendingPaise: wallet?.pendingPaise ?? 0,
+        pendingPaise,
         lifetimePaise: wallet?.lifetimePaise ?? 0,
       },
       clipsUnderReview: reviewCount,

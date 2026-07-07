@@ -568,10 +568,12 @@ export class CampaignsService {
     createdAt: Date;
     updatedAt?: Date;
   }) {
-    const poolPercent =
+    const rawPercent =
       c.budgetPaise > 0
-        ? Math.round((c.budgetUsedPaise / c.budgetPaise) * 100)
+        ? Math.min(100, (c.budgetUsedPaise / c.budgetPaise) * 100)
         : 0;
+    // Show at least 1% when any budget has been consumed so the bar is visibly non-empty.
+    const poolPercent = rawPercent === 0 ? 0 : Math.max(1, Math.round(rawPercent));
 
     return {
       id: c.id,

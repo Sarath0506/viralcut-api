@@ -608,6 +608,9 @@ export class ParticipationService {
             creator: {
               select: { id: true, displayName: true, username: true },
             },
+            creatorProfile: {
+              select: { id: true, platform: true, handle: true, label: true, avatarUrl: true },
+            },
             deliverables: {
               select: { id: true, platform: true, status: true },
               orderBy: { platform: "asc" },
@@ -642,6 +645,13 @@ export class ParticipationService {
         d.participation.creator.displayName ??
         d.participation.creator.username ??
         "Creator",
+      creatorProfile: {
+        id: d.participation.creatorProfile.id,
+        platform: d.participation.creatorProfile.platform,
+        handle: d.participation.creatorProfile.handle,
+        label: d.participation.creatorProfile.label,
+        avatarUrl: d.participation.creatorProfile.avatarUrl,
+      },
       priorRejectionCount: d._count.rejectionEvents,
       viewCount: d.viewCount,
       likeCount: d.likeCount,
@@ -676,6 +686,9 @@ export class ParticipationService {
                 username: true,
                 phone: true,
               },
+            },
+            creatorProfile: {
+              select: { id: true, platform: true, handle: true, label: true, avatarUrl: true },
             },
             deliverables: { orderBy: { platform: "asc" } },
           },
@@ -719,6 +732,13 @@ export class ParticipationService {
         budgetPaise: deliverable.participation.campaign.budgetPaise,
       },
       creator: deliverable.participation.creator,
+      creatorProfile: {
+        id: deliverable.participation.creatorProfile.id,
+        platform: deliverable.participation.creatorProfile.platform,
+        handle: deliverable.participation.creatorProfile.handle,
+        label: deliverable.participation.creatorProfile.label,
+        avatarUrl: deliverable.participation.creatorProfile.avatarUrl,
+      },
       siblingDeliverables: deliverable.participation.deliverables.map((s) => ({
         id: s.id,
         platform: s.platform,
@@ -1136,8 +1156,15 @@ export class ParticipationService {
       },
     });
 
-    // Auto-pause if the campaign budget pool is now full
-    await this._autoPauseCampaignIfPoolFull(deliverable.participation.campaign);
+    // Auto-pause if the campaign budget pool is now full; emit update either way
+    // so brand portal pool bars refresh in real time after every view sync.
+    const wasPaused = await this._autoPauseCampaignIfPoolFull(deliverable.participation.campaign);
+    if (!wasPaused) {
+      this.realtime.emitCampaignUpdated({
+        id: deliverable.participation.campaign.id,
+        brandProfileId: deliverable.participation.campaign.brandProfileId,
+      });
+    }
 
     return {
       id:           updated.id,
@@ -1154,8 +1181,8 @@ export class ParticipationService {
     status: CampaignStatus;
     budgetPaise: number;
     brandProfileId: string | null;
-  }): Promise<void> {
-    if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) return;
+  }): Promise<boolean> {
+    if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) return false;
 
     const rows = await this.prisma.$queryRaw<{ total: bigint }[]>`
       SELECT COALESCE(SUM(
@@ -1174,7 +1201,7 @@ export class ParticipationService {
     `;
 
     const budgetUsed = Number(rows[0]?.total ?? 0);
-    if (budgetUsed < campaign.budgetPaise) return;
+    if (budgetUsed < campaign.budgetPaise) return false;
 
     await this.prisma.campaign.update({
       where: { id: campaign.id },
@@ -1186,6 +1213,8 @@ export class ParticipationService {
       status: CampaignStatus.paused,
       brandProfileId: campaign.brandProfileId,
     });
+
+    return true;
   }
 
   async countPendingReviewsForBrand(
