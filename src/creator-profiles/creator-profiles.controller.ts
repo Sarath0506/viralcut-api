@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -48,5 +49,35 @@ export class CreatorProfilesController {
   @Delete(":id")
   remove(@CurrentUser() user: AuthJwtPayload, @Param("id") id: string) {
     return this.profiles.delete(user.sub, id);
+  }
+
+  @Post(":id/social/:platform")
+  connectSocial(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Param("platform") platform: string,
+    @Body("handle") handle: string,
+  ) {
+    const allowed = ["instagram", "youtube", "twitter"] as const;
+    if (!allowed.includes(platform as never)) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    if (!handle?.trim()) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "handle is required" });
+    }
+    return this.profiles.connectSocial(user.sub, id, platform as "instagram" | "youtube" | "twitter", handle.trim());
+  }
+
+  @Delete(":id/social/:platform")
+  disconnectSocial(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Param("platform") platform: string,
+  ) {
+    const allowed = ["instagram", "youtube", "twitter"] as const;
+    if (!allowed.includes(platform as never)) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    return this.profiles.disconnectSocial(user.sub, id, platform);
   }
 }

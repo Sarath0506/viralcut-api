@@ -4,13 +4,18 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { ApifyService } from "../common/apify.service";
 import type { CreateCreatorProfileDto } from "./dto/creator-profile.dto";
 
 @Injectable()
 export class CreatorProfilesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly apify: ApifyService,
+  ) {}
 
   private format(profile: {
     id: string;
@@ -19,6 +24,8 @@ export class CreatorProfilesService {
     label: string | null;
     avatarUrl: string | null;
     isDefault: boolean;
+    socialLinks?: Prisma.JsonValue | null;
+    socialStats?: Prisma.JsonValue | null;
   }) {
     return {
       id: profile.id,
@@ -27,6 +34,8 @@ export class CreatorProfilesService {
       label: profile.label,
       avatarUrl: profile.avatarUrl,
       isDefault: profile.isDefault,
+      socialLinks: (profile.socialLinks as Record<string, string> | null) ?? {},
+      socialStats: (profile.socialStats as Record<string, unknown> | null) ?? {},
     };
   }
 
@@ -127,6 +136,77 @@ export class CreatorProfilesService {
     }
 
     return { ok: true };
+  }
+
+  async connectSocial(
+    userId: string,
+    profileId: string,
+    platform: "instagram" | "youtube" | "twitter",
+    handleOrUrl: string,
+  ) {
+    const profile = await this.assertOwnership(userId, profileId);
+    const currentLinks = (profile.socialLinks as Record<string, string> | null) ?? {};
+
+    await this.prisma.creatorProfile.update({
+      where: { id: profileId },
+      data: { socialLinks: { ...currentLinks, [platform]: handleOrUrl } as Prisma.InputJsonValue },
+    });
+
+    // Kick off Apify scraping in background — don't block the response
+    this._scrapeAndStoreStats(profileId, platform, handleOrUrl).catch(() => {});
+
+    return { platform, handle: handleOrUrl, status: "fetching" };
+  }
+
+  async disconnectSocial(userId: string, profileId: string, platform: string) {
+    const profile = await this.assertOwnership(userId, profileId);
+    const links = { ...((profile.socialLinks as Record<string, string> | null) ?? {}) };
+    const stats = { ...((profile.socialStats as Record<string, unknown> | null) ?? {}) };
+    delete links[platform];
+    delete stats[platform];
+
+    await this.prisma.creatorProfile.update({
+      where: { id: profileId },
+      data: {
+        socialLinks: Object.keys(links).length ? (links as Prisma.InputJsonValue) : {},
+        socialStats: Object.keys(stats).length ? (stats as Prisma.InputJsonValue) : {},
+      },
+    });
+    return { platform, status: "disconnected" };
+  }
+
+  private async _scrapeAndStoreStats(
+    profileId: string,
+    platform: "instagram" | "youtube" | "twitter",
+    handleOrUrl: string,
+  ) {
+    let stats = await this.apify.getSocialProfileStats(platform, handleOrUrl);
+
+    if (!stats) {
+      const handle = handleOrUrl.trim().replace(/^@/, "").split("/").filter(Boolean).pop()?.split("?")[0] ?? handleOrUrl;
+      stats = {
+        platform,
+        handle,
+        displayName: null,
+        followersCount: 0,
+        followingCount: 0,
+        postsCount: 0,
+        profilePicUrl: null,
+        bio: null,
+        fetchedAt: new Date().toISOString(),
+      };
+    }
+
+    const profile = await this.prisma.creatorProfile.findUnique({
+      where: { id: profileId },
+      select: { socialStats: true },
+    });
+    const currentStats = (profile?.socialStats as Record<string, unknown> | null) ?? {};
+
+    await this.prisma.creatorProfile.update({
+      where: { id: profileId },
+      data: { socialStats: { ...currentStats, [platform]: stats } as Prisma.InputJsonValue },
+    });
   }
 
   /** Ensures the profile belongs to the user, throwing NOT_FOUND otherwise. */

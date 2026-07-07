@@ -25,7 +25,7 @@ describe("CreatorProfilesService", () => {
 
   beforeEach(() => {
     prisma = makePrisma();
-    service = new CreatorProfilesService(prisma as never);
+    service = new CreatorProfilesService(prisma as never, {} as never);
   });
 
   describe("create", () => {

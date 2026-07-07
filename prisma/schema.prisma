@@ -782,9 +782,13 @@ model CreatorProfile {
 
   avatarUrl String?  @map("avatar_url")
 
-  isDefault Boolean  @default(false) @map("is_default")
+  isDefault   Boolean  @default(false) @map("is_default")
 
-  createdAt DateTime @default(now()) @map("created_at")
+  socialLinks Json?    @default("{}") @map("social_links")
+
+  socialStats Json?    @default("{}") @map("social_stats")
+
+  createdAt   DateTime @default(now()) @map("created_at")
 
 
 
