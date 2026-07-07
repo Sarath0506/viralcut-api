@@ -185,20 +185,37 @@ export class ApifyService {
 
     let items: any[] = [];
 
-    // Use "profiles" resultsType to get follower/account data directly (not posts)
+    // Attempt 1: usernames without resultsType — returns profile object directly
     try {
       items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
         usernames: [username],
-        resultsType: "profiles",
         resultsLimit: 1,
       });
-    } catch (_) {
-      // Fallback to directUrls
-      items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
-        directUrls: [profileUrl],
-        resultsType: "profiles",
-        resultsLimit: 1,
-      });
+      items = items.filter((i) => !i?.error);
+    } catch (_) {}
+
+    // Attempt 2: usernames with resultsType details (works for accounts with posts)
+    if (!items.length) {
+      try {
+        items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
+          usernames: [username],
+          resultsType: "details",
+          resultsLimit: 3,
+        });
+        items = items.filter((i) => !i?.error);
+      } catch (_) {}
+    }
+
+    // Attempt 3: directUrls fallback
+    if (!items.length) {
+      try {
+        items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
+          directUrls: [profileUrl],
+          resultsType: "details",
+          resultsLimit: 3,
+        });
+        items = items.filter((i) => !i?.error);
+      } catch (_) {}
     }
 
     if (!items.length || items[0]?.error) {
