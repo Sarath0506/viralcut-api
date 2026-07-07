@@ -18,7 +18,7 @@ export class WalletService {
 
   // Earnings that are "in flight" — the creator has done their part
   // (submitted live proof or had proof approved) but payout hasn't settled yet.
-  async computePendingPaise(creatorId: string): Promise<number> {
+  async computePendingPaise(creatorId: string, creatorProfileId?: string): Promise<number> {
     const pendingStatuses = [
       FormatDeliverableStatus.live_submitted,
       FormatDeliverableStatus.proof_under_review,
@@ -27,7 +27,7 @@ export class WalletService {
     const deliverables = await this.prisma.formatDeliverable.findMany({
       where: {
         status: { in: pendingStatuses },
-        participation: { creatorId },
+        participation: { creatorId, ...(creatorProfileId ? { creatorProfileId } : {}) },
       },
       include: {
         participation: {
@@ -46,20 +46,20 @@ export class WalletService {
     }, 0);
   }
 
-  async countClipsUnderReview(creatorId: string): Promise<number> {
+  async countClipsUnderReview(creatorId: string, creatorProfileId?: string): Promise<number> {
     return this.prisma.formatDeliverable.count({
       where: {
         status: FormatDeliverableStatus.under_review,
-        participation: { creatorId },
+        participation: { creatorId, ...(creatorProfileId ? { creatorProfileId } : {}) },
       },
     });
   }
 
-  async getWallet(userId: string) {
+  async getWallet(userId: string, creatorProfileId?: string) {
     const [wallet, pendingPaise, clipsUnderReview] = await Promise.all([
       this.getOrCreateWallet(userId),
-      this.computePendingPaise(userId),
-      this.countClipsUnderReview(userId),
+      this.computePendingPaise(userId, creatorProfileId),
+      this.countClipsUnderReview(userId, creatorProfileId),
     ]);
     return {
       availablePaise: wallet.availablePaise,

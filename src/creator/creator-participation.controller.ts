@@ -46,8 +46,9 @@ export class CreatorParticipationController {
   list(
     @CurrentUser() user: AuthJwtPayload,
     @Query("tab") tab?: "active" | "completed",
+    @Query("creatorProfileId") creatorProfileId?: string,
   ) {
-    return this.participation.listForCreator(user.sub, tab ?? "active");
+    return this.participation.listForCreator(user.sub, tab ?? "active", creatorProfileId);
   }
 
   @Get("participations/:id")

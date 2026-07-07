@@ -355,11 +355,11 @@ export class SubmissionsService {
     };
   }
 
-  async creatorDashboard(userId: string) {
+  async creatorDashboard(userId: string, creatorProfileId?: string) {
     const [wallet, pendingPaise, reviewCount, trending, user] = await Promise.all([
       this.prisma.wallet.findUnique({ where: { userId } }),
-      this.walletService.computePendingPaise(userId),
-      this.participation.countUnderReviewForCreator(userId),
+      this.walletService.computePendingPaise(userId, creatorProfileId),
+      this.participation.countUnderReviewForCreator(userId, creatorProfileId),
       this.prisma.campaign.findMany({
         where: { status: CampaignStatus.live },
         orderBy: { createdAt: "desc" },

@@ -443,9 +443,13 @@ export class ParticipationService {
     };
   }
 
-  async listForCreator(creatorId: string, tab: "active" | "completed" = "active") {
+  async listForCreator(
+    creatorId: string,
+    tab: "active" | "completed" = "active",
+    creatorProfileId?: string,
+  ) {
     const participations = await this.prisma.campaignParticipation.findMany({
-      where: { creatorId },
+      where: { creatorId, ...(creatorProfileId ? { creatorProfileId } : {}) },
       include: participationInclude,
       orderBy: { joinedAt: "desc" },
     });
@@ -880,11 +884,11 @@ export class ParticipationService {
     return { id: updated.id, status: updated.status };
   }
 
-  async countUnderReviewForCreator(creatorId: string): Promise<number> {
+  async countUnderReviewForCreator(creatorId: string, creatorProfileId?: string): Promise<number> {
     return this.prisma.formatDeliverable.count({
       where: {
         status: FormatDeliverableStatus.under_review,
-        participation: { creatorId },
+        participation: { creatorId, ...(creatorProfileId ? { creatorProfileId } : {}) },
       },
     });
   }
