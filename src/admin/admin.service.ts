@@ -1,11 +1,30 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import { CampaignInviteStatus, UserRole } from "@prisma/client";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { CampaignInviteStatus, FormatDeliverableStatus, KycStatus, StaffAccessLevel, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 
+import { ActivityLogService } from "../activity/activity-log.service";
+import { computeEstimatedPaise } from "../common/earnings";
 import { PrismaService } from "../prisma/prisma.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
 import { EmailService } from "../notifications/email.service";
+import { InAppNotificationService } from "../notifications/in-app-notification.service";
+import { computeParticipationSummary, isParticipationCompleted } from "../participation/participation-summary";
+import { WalletService } from "../wallet/wallet.service";
 import type { ListCampaignsQueryDto } from "../campaigns/dto/list-campaigns-query.dto";
+
+const ACTION_LABELS: Record<string, string> = {
+  "campaign.created": "Created a campaign",
+  "submission.approved": "Approved a submission",
+  "submission.rejected": "Rejected a submission",
+  "proof.approved": "Approved proof of work",
+  "proof.rejected": "Rejected proof of work",
+  "brand.assigned": "Was assigned a brand",
+  "brand.unassigned": "Was unassigned from a brand",
+  "staff.deactivated": "Account deactivated",
+  "staff.reactivated": "Account reactivated",
+  "task.assigned": "Was assigned a task",
+  "task.completed": "Completed a task",
+};
 
 @Injectable()
 export class AdminService {
@@ -13,6 +32,9 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly campaigns: CampaignsService,
     private readonly email: EmailService,
+    private readonly wallet: WalletService,
+    private readonly activityLog: ActivityLogService,
+    private readonly notifications: InAppNotificationService,
   ) {}
 
   async listBrands() {
@@ -41,13 +63,14 @@ export class AdminService {
     pocName?: string;
     pocPhone?: string;
     pocEmail?: string;
+    logoUrl?: string;
   }) {
     const loginEmail = dto.companyEmail.toLowerCase().trim();
     const existing = await this.prisma.user.findUnique({ where: { email: loginEmail } });
     if (existing) {
       throw new ConflictException({ code: "CONFLICT", message: "Email already registered" });
     }
-    const rawPassword = `ViralCut@${Math.random().toString(36).slice(2, 10)}`;
+    const rawPassword = `Halchal@${Math.random().toString(36).slice(2, 10)}`;
     const passwordHash = await bcrypt.hash(rawPassword, 12);
     const user = await this.prisma.user.create({
       data: {
@@ -67,6 +90,7 @@ export class AdminService {
           pocName: dto.pocName?.trim() || null,
           pocPhone: dto.pocPhone?.trim() || null,
           pocEmail: dto.pocEmail?.trim() || null,
+          logoUrl: dto.logoUrl?.trim() || null,
         },
       }),
       this.prisma.wallet.create({ data: { userId: user.id } }),
@@ -197,7 +221,7 @@ export class AdminService {
         include: {
           participation: {
             include: {
-              creator: { select: { displayName: true } },
+              creator: { select: { id: true, displayName: true } },
               campaign: { select: { id: true, title: true } },
             },
           },
@@ -264,6 +288,7 @@ export class AdminService {
         status: d.status,
         platform: d.platform,
         draftSubmittedAt: d.draftSubmittedAt?.toISOString() ?? null,
+        creatorId: d.participation.creator.id,
         creatorName: d.participation.creator.displayName ?? "Unknown",
         campaignId: d.participation.campaign.id,
         campaignTitle: d.participation.campaign.title,
@@ -305,31 +330,413 @@ export class AdminService {
     return members.map((m) => this.formatStaffUser(m));
   }
 
-  async assignBrandToStaff(staffUserId: string, brandProfileId: string) {
+  async assignBrandToStaff(
+    staffUserId: string,
+    brandProfileId: string,
+    accessLevel: StaffAccessLevel = StaffAccessLevel.full,
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id: staffUserId } });
     if (!user || user.role !== UserRole.staff) throw new NotFoundException({ code: "NOT_FOUND", message: "Team member not found" });
     const brand = await this.prisma.brandProfile.findUnique({ where: { id: brandProfileId } });
     if (!brand) throw new NotFoundException({ code: "NOT_FOUND", message: "Brand not found" });
     await this.prisma.staffBrandAssignment.upsert({
       where: { staffUserId_brandProfileId: { staffUserId, brandProfileId } },
-      create: { staffUserId, brandProfileId },
-      update: {},
+      create: { staffUserId, brandProfileId, accessLevel },
+      update: { accessLevel },
+    });
+    await this.activityLog.log(staffUserId, "brand.assigned", {
+      targetType: "StaffBrandAssignment",
+      targetId: staffUserId,
+      brandProfileId,
+      metadata: { companyName: brand.companyName, accessLevel },
+    });
+    await this.notifications.create(staffUserId, "staff", {
+      type: "brand.assigned",
+      title: "You were assigned a brand",
+      body: brand.companyName,
+      link: "/staff/brands",
     });
     return { assigned: true };
   }
 
   async removeBrandFromStaff(staffUserId: string, brandProfileId: string) {
+    const brand = await this.prisma.brandProfile.findUnique({ where: { id: brandProfileId } });
     await this.prisma.staffBrandAssignment.deleteMany({ where: { staffUserId, brandProfileId } });
+    await this.activityLog.log(staffUserId, "brand.unassigned", {
+      targetType: "StaffBrandAssignment",
+      targetId: staffUserId,
+      brandProfileId,
+    });
+    await this.notifications.create(staffUserId, "staff", {
+      type: "brand.unassigned",
+      title: "You were unassigned from a brand",
+      body: brand?.companyName,
+      link: "/staff/brands",
+    });
     return { removed: true };
   }
 
-  private formatStaffUser(user: { id: string; email: string | null; displayName: string | null; createdAt: Date; staffBrandAssignments?: { brandProfile: { id: string; companyName: string; logoUrl: string | null } }[] }) {
+  async deactivateStaff(staffUserId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: staffUserId } });
+    if (!user || user.role !== UserRole.staff) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Team member not found" });
+    }
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: staffUserId }, data: { isActive: false } }),
+      this.prisma.staffBrandAssignment.deleteMany({ where: { staffUserId } }),
+    ]);
+    await this.activityLog.log(staffUserId, "staff.deactivated", {
+      targetType: "User",
+      targetId: staffUserId,
+    });
+    return { deactivated: true };
+  }
+
+  async reactivateStaff(staffUserId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: staffUserId } });
+    if (!user || user.role !== UserRole.staff) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Team member not found" });
+    }
+    await this.prisma.user.update({ where: { id: staffUserId }, data: { isActive: true } });
+    await this.activityLog.log(staffUserId, "staff.reactivated", {
+      targetType: "User",
+      targetId: staffUserId,
+    });
+    return { reactivated: true };
+  }
+
+  async getStaffActivity(staffUserId: string, limit = 50) {
+    const entries = await this.prisma.activityLog.findMany({
+      where: { actorUserId: staffUserId },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      include: { brandProfile: { select: { companyName: true } } },
+    });
+    return entries.map((e) => ({
+      id: e.id,
+      action: e.action,
+      label: ACTION_LABELS[e.action] ?? e.action,
+      brandName: e.brandProfile?.companyName ?? null,
+      metadata: e.metadata,
+      createdAt: e.createdAt.toISOString(),
+    }));
+  }
+
+  async listCreators() {
+    const creators = await this.prisma.user.findMany({
+      where: { role: UserRole.creator },
+      include: {
+        wallet: { select: { availablePaise: true, lifetimePaise: true } },
+        _count: { select: { campaignParticipations: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return creators.map((c) => ({
+      id: c.id,
+      displayName: c.displayName,
+      username: c.username,
+      email: c.email,
+      phone: c.phone,
+      avatarUrl: c.avatarUrl,
+      kycStatus: c.kycStatus,
+      isActive: c.isActive,
+      createdAt: c.createdAt.toISOString(),
+      campaignCount: c._count.campaignParticipations,
+      walletAvailablePaise: c.wallet?.availablePaise ?? 0,
+      walletLifetimePaise: c.wallet?.lifetimePaise ?? 0,
+    }));
+  }
+
+  async getCreatorDetail(creatorId: string) {
+    const creator = await this.prisma.user.findUnique({ where: { id: creatorId } });
+    if (!creator || creator.role !== UserRole.creator) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Creator not found" });
+    }
+
+    const [wallet, payoutMethods, withdrawals, participations, linkedProfiles] = await Promise.all([
+      this.prisma.wallet.findUnique({ where: { userId: creatorId } }),
+      this.prisma.payoutMethod.findMany({
+        where: { userId: creatorId },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+      }),
+      this.prisma.withdrawal.findMany({
+        where: { userId: creatorId },
+        orderBy: { createdAt: "desc" },
+        take: 30,
+      }),
+      this.prisma.campaignParticipation.findMany({
+        where: { creatorId },
+        include: {
+          campaign: { select: { id: true, title: true, status: true, ratePer1kPaise: true, maxPayoutPaise: true, coverImageUrl: true } },
+          creatorProfile: { select: { platform: true, handle: true, label: true } },
+          deliverables: {
+            select: { status: true, draftDriveUrl: true, livePostUrl: true, viewCount: true, paidAmountPaise: true },
+          },
+        },
+        orderBy: { joinedAt: "desc" },
+      }),
+      this.prisma.creatorProfile.findMany({
+        where: { userId: creatorId },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+      }),
+    ]);
+
+    const runningCampaigns: Array<{ campaignId: string; title: string; status: string; coverImageUrl: string | null; viewCount: number; earnedPaise: number; handle: string; platform: string }> = [];
+    const pastCampaigns: Array<{ campaignId: string; title: string; status: string; coverImageUrl: string | null; viewCount: number; earnedPaise: number; handle: string; platform: string }> = [];
+    let totalViews = 0;
+    let totalEarnedPaise = 0;
+
+    for (const p of participations) {
+      const { ratePer1kPaise, maxPayoutPaise } = p.campaign;
+      const viewCount = p.deliverables.reduce((sum, d) => sum + d.viewCount, 0);
+      const earnedPaise = p.deliverables.reduce(
+        (sum, d) => sum + (d.paidAmountPaise ?? computeEstimatedPaise(d.viewCount, ratePer1kPaise, maxPayoutPaise)),
+        0,
+      );
+      totalViews += viewCount;
+      totalEarnedPaise += earnedPaise;
+
+      const summary = computeParticipationSummary(p.deliverables, p.campaign.status);
+      const entry = {
+        campaignId: p.campaign.id,
+        title: p.campaign.title,
+        status: summary,
+        coverImageUrl: p.campaign.coverImageUrl,
+        viewCount,
+        earnedPaise,
+        handle: p.creatorProfile.handle,
+        platform: p.creatorProfile.platform,
+      };
+      if (isParticipationCompleted(summary)) {
+        pastCampaigns.push(entry);
+      } else {
+        runningCampaigns.push(entry);
+      }
+    }
+
+    return {
+      id: creator.id,
+      displayName: creator.displayName,
+      username: creator.username,
+      email: creator.email,
+      phone: creator.phone,
+      avatarUrl: creator.avatarUrl,
+      bio: creator.bio,
+      socialLinks: (creator.socialLinks as Record<string, string> | null) ?? null,
+      kycStatus: creator.kycStatus,
+      isActive: creator.isActive,
+      createdAt: creator.createdAt.toISOString(),
+      linkedProfiles: linkedProfiles.map((p) => ({
+        id: p.id,
+        platform: p.platform,
+        handle: p.handle,
+        label: p.label,
+        avatarUrl: p.avatarUrl,
+        isDefault: p.isDefault,
+      })),
+      wallet: {
+        availablePaise: wallet?.availablePaise ?? 0,
+        pendingPaise: wallet?.pendingPaise ?? 0,
+        lifetimePaise: wallet?.lifetimePaise ?? 0,
+      },
+      payoutMethods: payoutMethods.map((m) => ({
+        id: m.id,
+        type: m.type,
+        label: m.label,
+        accountHolderName: m.accountHolderName,
+        accountNumber: m.accountNumber,
+        ifscCode: m.ifscCode,
+        accountMasked: m.accountMasked,
+        isDefault: m.isDefault,
+      })),
+      withdrawals: withdrawals.map((w) => ({
+        id: w.id,
+        amountPaise: w.amountPaise,
+        feePaise: w.feePaise,
+        netPaise: w.netPaise,
+        status: w.status,
+        createdAt: w.createdAt.toISOString(),
+        processedAt: w.processedAt?.toISOString() ?? null,
+      })),
+      runningCampaigns,
+      pastCampaigns,
+      totalViews,
+      totalEarnedPaise,
+    };
+  }
+
+  async reviewKyc(creatorId: string, action: "approve" | "reject", reason?: string) {
+    const creator = await this.prisma.user.findUnique({ where: { id: creatorId } });
+    if (!creator || creator.role !== UserRole.creator) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Creator not found" });
+    }
+    if (creator.kycStatus !== KycStatus.pending) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "KYC is not pending review",
+      });
+    }
+    if (action === "reject" && !reason?.trim()) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "reason required when rejecting",
+      });
+    }
+
+    const status = action === "approve" ? KycStatus.verified : KycStatus.rejected;
+    const updated = await this.prisma.user.update({
+      where: { id: creatorId },
+      data: {
+        kycStatus: status,
+        kycReviewedAt: new Date(),
+        kycRejectionReason: action === "reject" ? reason!.trim() : null,
+      },
+    });
+
+    await this.notifications.create(creatorId, "creator", {
+      type: action === "approve" ? "kyc_verified" : "kyc_rejected",
+      title: action === "approve" ? "KYC verified ✅" : "KYC needs attention",
+      body:
+        action === "approve"
+          ? "Your identity has been verified. You're all set to receive payouts."
+          : `Your KYC submission was rejected: ${reason!.trim()}`,
+      link: "/profile/kyc",
+    });
+
+    return { id: updated.id, kycStatus: updated.kycStatus };
+  }
+
+  private formatStaffUser(user: { id: string; email: string | null; displayName: string | null; createdAt: Date; isActive: boolean; staffBrandAssignments?: { accessLevel: StaffAccessLevel; brandProfile: { id: string; companyName: string; logoUrl: string | null } }[] }) {
     return {
       id: user.id,
       name: user.displayName ?? "",
       email: user.email ?? "",
       createdAt: user.createdAt.toISOString(),
-      assignedBrands: (user.staffBrandAssignments ?? []).map((a) => a.brandProfile),
+      isActive: user.isActive,
+      assignedBrands: (user.staffBrandAssignments ?? []).map((a) => ({ ...a.brandProfile, accessLevel: a.accessLevel })),
     };
+  }
+
+  async getCampaignPayouts(campaignId: string) {
+    const deliverables = await this.prisma.formatDeliverable.findMany({
+      where: {
+        status: FormatDeliverableStatus.proof_approved,
+        participation: { campaignId },
+      },
+      include: {
+        participation: {
+          include: {
+            creator: { select: { id: true, displayName: true, username: true } },
+            creatorProfile: { select: { id: true, platform: true, handle: true, label: true } },
+            campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
+          },
+        },
+      },
+      orderBy: { proofReviewedAt: "desc" },
+    });
+
+    // Keyed by creatorProfileId (not creatorId) — the same person's two linked
+    // profiles joining the same campaign show as separate payout rows, since
+    // each profile's deliverables/earnings are tracked independently.
+    const byProfile = new Map<string, {
+      creatorId: string;
+      creatorProfileId: string;
+      creatorName: string;
+      handle: string;
+      platform: string;
+      deliverables: { id: string; platform: string; viewCount: number; earnedPaise: number; paidAt: string | null; paidAmountPaise: number | null }[];
+      totalApprovedPaise: number;
+      totalUnpaidPaise: number;
+      totalPaidPaise: number;
+    }>();
+
+    for (const d of deliverables) {
+      const creator = d.participation.creator;
+      const profile = d.participation.creatorProfile;
+      const { ratePer1kPaise, maxPayoutPaise } = d.participation.campaign;
+      const earnedPaise = d.paidAmountPaise ?? computeEstimatedPaise(d.viewCount, ratePer1kPaise, maxPayoutPaise);
+
+      let entry = byProfile.get(profile.id);
+      if (!entry) {
+        entry = {
+          creatorId: creator.id,
+          creatorProfileId: profile.id,
+          creatorName: profile.label ?? creator.displayName ?? creator.username ?? "Creator",
+          handle: profile.handle,
+          platform: profile.platform,
+          deliverables: [],
+          totalApprovedPaise: 0,
+          totalUnpaidPaise: 0,
+          totalPaidPaise: 0,
+        };
+        byProfile.set(profile.id, entry);
+      }
+
+      entry.deliverables.push({
+        id: d.id,
+        platform: d.platform,
+        viewCount: d.viewCount,
+        earnedPaise,
+        paidAt: d.paidAt?.toISOString() ?? null,
+        paidAmountPaise: d.paidAmountPaise,
+      });
+      entry.totalApprovedPaise += earnedPaise;
+      if (d.paidAt) {
+        entry.totalPaidPaise += d.paidAmountPaise ?? 0;
+      } else {
+        entry.totalUnpaidPaise += earnedPaise;
+      }
+    }
+
+    return Array.from(byProfile.values());
+  }
+
+  async payoutCampaign(campaignId: string, creatorId?: string) {
+    const deliverables = await this.prisma.formatDeliverable.findMany({
+      where: {
+        status: FormatDeliverableStatus.proof_approved,
+        paidAt: null,
+        participation: {
+          campaignId,
+          ...(creatorId ? { creatorId } : {}),
+        },
+      },
+      include: {
+        participation: {
+          include: {
+            campaign: { select: { title: true, ratePer1kPaise: true, maxPayoutPaise: true } },
+          },
+        },
+      },
+    });
+
+    let paidCount = 0;
+    let totalPaidPaise = 0;
+
+    for (const d of deliverables) {
+      const { title, ratePer1kPaise, maxPayoutPaise } = d.participation.campaign;
+      const amountPaise = computeEstimatedPaise(d.viewCount, ratePer1kPaise, maxPayoutPaise);
+
+      // Atomic compare-and-swap via the WHERE clause: only proceeds if still unpaid,
+      // so concurrent payout requests can never double-credit the same deliverable.
+      const { count } = await this.prisma.formatDeliverable.updateMany({
+        where: { id: d.id, paidAt: null },
+        data: { paidAt: new Date(), paidAmountPaise: amountPaise },
+      });
+      if (count === 0) continue;
+
+      await this.wallet.creditEarning(
+        d.participation.creatorId,
+        amountPaise,
+        d.id,
+        `Payout: ${title} (${d.platform})`,
+      );
+
+      paidCount += 1;
+      totalPaidPaise += amountPaise;
+    }
+
+    return { paidCount, totalPaidPaise };
   }
 }

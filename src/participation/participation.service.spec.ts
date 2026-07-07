@@ -15,7 +15,7 @@ import { ReviewDeliverableAction } from "./dto/review-deliverable.dto";
 
 function makePrisma() {
   return {
-    campaign: { findFirst: vi.fn() },
+    campaign: { findFirst: vi.fn(), findUnique: vi.fn() },
     campaignParticipation: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
@@ -52,21 +52,32 @@ function makeRealtime() {
   };
 }
 
+function makeCreatorProfiles() {
+  return {
+    assertOwnership: vi.fn().mockResolvedValue({ id: "profile-1", userId: "creator-1" }),
+  };
+}
+
 describe("ParticipationService", () => {
   let prisma: ReturnType<typeof makePrisma>;
   let campaignAccess: ReturnType<typeof makeCampaignAccess>;
   let realtime: ReturnType<typeof makeRealtime>;
+  let creatorProfiles: ReturnType<typeof makeCreatorProfiles>;
   let service: ParticipationService;
 
   beforeEach(() => {
     prisma = makePrisma();
     campaignAccess = makeCampaignAccess();
     realtime = makeRealtime();
+    creatorProfiles = makeCreatorProfiles();
     service = new ParticipationService(
       prisma as never,
       campaignAccess as never,
       realtime as never,
       { getViewCount: async () => ({ viewCount: 0, platform: "unknown" }) } as never,
+      { log: async () => undefined } as never,
+      { create: async () => undefined } as never,
+      creatorProfiles as never,
     );
   });
 
@@ -84,6 +95,7 @@ describe("ParticipationService", () => {
         id: "part-1",
         campaignId: "camp-1",
         creatorId: "creator-1",
+        creatorProfileId: "profile-1",
         platformsSnapshot: ["instagram_reel", "youtube_shorts"],
         joinedAt: new Date("2026-06-09"),
         campaign: {
@@ -95,6 +107,13 @@ describe("ParticipationService", () => {
           ratePer1kPaise: 5000,
           maxPayoutPaise: 100000,
           brandProfile: { companyName: "Brand", logoUrl: null },
+        },
+        creatorProfile: {
+          id: "profile-1",
+          platform: "instagram",
+          handle: "demo_creator",
+          label: null,
+          avatarUrl: null,
         },
         deliverables: [
           {
@@ -124,7 +143,7 @@ describe("ParticipationService", () => {
         ],
       });
 
-      const result = await service.joinCampaign("creator-1", "camp-1");
+      const result = await service.joinCampaign("creator-1", "camp-1", "profile-1");
 
       expect(result.id).toBe("part-1");
       expect(result.deliverables).toHaveLength(2);
@@ -143,6 +162,7 @@ describe("ParticipationService", () => {
         id: "part-existing",
         campaignId: "camp-1",
         creatorId: "creator-1",
+        creatorProfileId: "profile-1",
         platformsSnapshot: ["instagram_reel"],
         joinedAt: new Date(),
         campaign: {
@@ -155,19 +175,75 @@ describe("ParticipationService", () => {
           maxPayoutPaise: 100000,
           brandProfile: null,
         },
+        creatorProfile: {
+          id: "profile-1",
+          platform: "instagram",
+          handle: "demo_creator",
+          label: null,
+          avatarUrl: null,
+        },
         deliverables: [],
       });
 
       await expect(
-        service.joinCampaign("creator-1", "camp-1"),
+        service.joinCampaign("creator-1", "camp-1", "profile-1"),
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
     it("throws not found for non-live campaign", async () => {
       prisma.campaign.findFirst.mockResolvedValue(null);
       await expect(
-        service.joinCampaign("creator-1", "camp-1"),
+        service.joinCampaign("creator-1", "camp-1", "profile-1"),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe("getLeaderboard", () => {
+    it("ranks two profiles owned by the same user as independent entries", async () => {
+      prisma.campaign.findUnique.mockResolvedValue({
+        ratePer1kPaise: 5000,
+        maxPayoutPaise: 100000,
+      });
+      prisma.campaignParticipation.findMany.mockResolvedValue([
+        {
+          creator: { id: "user-1", displayName: "Ravi", username: "ravi", avatarUrl: null },
+          creatorProfile: { id: "profile-a", platform: "instagram", handle: "ravi_main", label: null },
+          deliverables: [{ viewCount: 1000, paidAmountPaise: null }],
+        },
+        {
+          creator: { id: "user-1", displayName: "Ravi", username: "ravi", avatarUrl: null },
+          creatorProfile: { id: "profile-b", platform: "instagram", handle: "ravi_memes", label: "Meme page" },
+          deliverables: [{ viewCount: 5000, paidAmountPaise: null }],
+        },
+      ]);
+
+      const result = await service.getLeaderboard("camp-1", "profile-b");
+
+      expect(result.totalParticipants).toBe(2);
+      expect(result.entries.map((e) => e.creatorProfileId)).toEqual([
+        "profile-b",
+        "profile-a",
+      ]);
+      expect(result.currentUser?.creatorProfileId).toBe("profile-b");
+      expect(result.currentUser?.displayName).toBe("Meme page");
+    });
+
+    it("returns null currentUser when no creatorProfileId is supplied", async () => {
+      prisma.campaign.findUnique.mockResolvedValue({
+        ratePer1kPaise: 5000,
+        maxPayoutPaise: 100000,
+      });
+      prisma.campaignParticipation.findMany.mockResolvedValue([
+        {
+          creator: { id: "user-1", displayName: "Ravi", username: "ravi", avatarUrl: null },
+          creatorProfile: { id: "profile-a", platform: "instagram", handle: "ravi_main", label: null },
+          deliverables: [{ viewCount: 1000, paidAmountPaise: null }],
+        },
+      ]);
+
+      const result = await service.getLeaderboard("camp-1");
+
+      expect(result.currentUser).toBeNull();
     });
   });
 

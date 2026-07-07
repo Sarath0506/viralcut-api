@@ -2,13 +2,14 @@ import { Module } from "@nestjs/common";
 
 import { AuthModule } from "../auth/auth.module";
 import { CampaignsModule } from "../campaigns/campaigns.module";
-import { ParticipationModule } from "../participation/participation.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { StorageModule } from "../storage/storage.module";
+import { WalletModule } from "../wallet/wallet.module";
 import { AdminController } from "./admin.controller";
 import { AdminService } from "./admin.service";
 
 @Module({
-  imports: [AuthModule, CampaignsModule, ParticipationModule, NotificationsModule],
+  imports: [AuthModule, CampaignsModule, NotificationsModule, StorageModule, WalletModule],
   controllers: [AdminController],
   providers: [AdminService],
 })

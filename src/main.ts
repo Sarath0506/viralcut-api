@@ -40,7 +40,7 @@ async function bootstrap(): Promise<void> {
   });
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle("ViralCut API")
+    .setTitle("Halchal API")
     .setDescription("Creator + brand platform API")
     .setVersion("0.1.0")
     .addBearerAuth()

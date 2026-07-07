@@ -28,8 +28,11 @@ export class CreatorSubmissionsController {
   constructor(private readonly submissions: SubmissionsService) {}
 
   @Get("dashboard")
-  dashboard(@CurrentUser() user: AuthJwtPayload) {
-    return this.submissions.creatorDashboard(user.sub);
+  dashboard(
+    @CurrentUser() user: AuthJwtPayload,
+    @Query("creatorProfileId") creatorProfileId?: string,
+  ) {
+    return this.submissions.creatorDashboard(user.sub, creatorProfileId);
   }
 
   @Get("submissions")

@@ -76,6 +76,10 @@ export class RealtimeGateway
         await client.join("creators");
       }
 
+      if (payload.role === UserRole.staff) {
+        await client.join(`staff:${payload.sub}`);
+      }
+
       this.logger.debug(`Client connected: ${client.id} (${payload.role})`);
     } catch {
       client.disconnect();
@@ -124,5 +128,9 @@ export class RealtimeGateway
 
   emitToCreators(event: string, payload: unknown): void {
     this.server?.to("creators").emit(event, payload);
+  }
+
+  emitToStaff(staffUserId: string, event: string, payload: unknown): void {
+    this.server?.to(`staff:${staffUserId}`).emit(event, payload);
   }
 }

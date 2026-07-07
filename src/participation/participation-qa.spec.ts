@@ -78,10 +78,25 @@ describe("Participation QA edge cases", () => {
           livePostUrl: null,
         },
       ],
-      CampaignStatus.paused,
+      CampaignStatus.closed,
     );
     expect(summary).toBe("closed");
     expect(isParticipationCompleted(summary)).toBe(true);
+  });
+
+  it("paused campaign keeps reflecting the creator's real deliverable stage", () => {
+    const summary = computeParticipationSummary(
+      [
+        {
+          status: FormatDeliverableStatus.under_review,
+          draftDriveUrl: "https://drive.google.com/a",
+          livePostUrl: null,
+        },
+      ],
+      CampaignStatus.paused,
+    );
+    expect(summary).toBe("in_review");
+    expect(isParticipationCompleted(summary)).toBe(false);
   });
 
   it("only 2 of 3 drive links = drafts_incomplete", () => {

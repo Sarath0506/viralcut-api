@@ -166,6 +166,24 @@ enum WithdrawalStatus {
 
 }
 
+enum StaffAccessLevel {
+
+  view_only
+
+  full
+
+}
+
+enum TaskStatus {
+
+  todo
+
+  in_progress
+
+  done
+
+}
+
 
 
 model User {
@@ -182,13 +200,33 @@ model User {
 
   displayName  String?   @map("display_name")
 
+  avatarUrl    String?   @map("avatar_url")
+
+  bio          String?   @db.Text
+
+  socialLinks  Json?     @map("social_links")
+
+  socialStats  Json?     @map("social_stats")
+
   username     String?   @unique
 
   fixedOtpCode String?   @map("fixed_otp_code") @db.VarChar(6)
 
   kycStatus        KycStatus @default(not_started) @map("kyc_status")
 
+  isActive         Boolean   @default(true) @map("is_active")
+
   termsAcceptedAt  DateTime? @map("terms_accepted_at")
+
+  kycDocumentUrl   String?   @map("kyc_document_url")
+
+  kycDocumentType  String?   @map("kyc_document_type")
+
+  kycSubmittedAt   DateTime? @map("kyc_submitted_at")
+
+  kycReviewedAt    DateTime? @map("kyc_reviewed_at")
+
+  kycRejectionReason String? @map("kyc_rejection_reason")
 
   createdAt        DateTime  @default(now()) @map("created_at")
 
@@ -203,6 +241,8 @@ model User {
   submissions               Submission[]
 
   campaignParticipations    CampaignParticipation[]
+
+  creatorProfiles           CreatorProfile[]
 
   deliverablesReviewed      FormatDeliverable[]     @relation("DeliverableReviewedBy")
 
@@ -223,6 +263,16 @@ model User {
   campaignInvitesSent       CampaignInvite[]   @relation("CampaignInviteInviter")
 
   campaignInvitesAccepted   CampaignInvite[]   @relation("CampaignInviteAcceptor")
+
+  tasksAssigned             Task[]             @relation("TaskAssignee")
+
+  tasksCreated              Task[]             @relation("TaskCreatedBy")
+
+  activityLogs              ActivityLog[]      @relation("ActivityActor")
+
+  notifications             Notification[]     @relation("NotificationRecipient")
+
+  deviceTokens              DeviceToken[]
 
 
 
@@ -344,6 +394,10 @@ model BrandProfile {
 
   staffAssignments StaffBrandAssignment[]
 
+  tasks Task[]
+
+  activityLogs ActivityLog[]
+
   @@map("brand_profiles")
 
 }
@@ -355,6 +409,8 @@ model StaffBrandAssignment {
   staffUserId   String   @map("staff_user_id")
 
   brandProfileId String  @map("brand_profile_id")
+
+  accessLevel   StaffAccessLevel @default(full) @map("access_level")
 
   assignedAt    DateTime @default(now()) @map("assigned_at")
 
@@ -369,6 +425,128 @@ model StaffBrandAssignment {
   @@index([brandProfileId])
 
   @@map("staff_brand_assignments")
+
+}
+
+model Task {
+
+  id              String     @id @default(cuid())
+
+  title           String
+
+  description     String?    @db.Text
+
+  assignedToUserId String    @map("assigned_to_user_id")
+
+  createdByUserId String     @map("created_by_user_id")
+
+  brandProfileId  String?    @map("brand_profile_id")
+
+  dueDate         DateTime?  @map("due_date")
+
+  status          TaskStatus @default(todo)
+
+  createdAt       DateTime   @default(now()) @map("created_at")
+
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+
+  assignedTo   User          @relation("TaskAssignee", fields: [assignedToUserId], references: [id], onDelete: Cascade)
+
+  createdBy    User          @relation("TaskCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  brandProfile BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+
+  @@index([assignedToUserId])
+
+  @@index([status])
+
+  @@map("tasks")
+
+}
+
+model ActivityLog {
+
+  id             String   @id @default(cuid())
+
+  actorUserId    String   @map("actor_user_id")
+
+  action         String
+
+  targetType     String   @map("target_type")
+
+  targetId       String   @map("target_id")
+
+  brandProfileId String?  @map("brand_profile_id")
+
+  metadata       Json?
+
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  actor        User          @relation("ActivityActor", fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  brandProfile BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+
+  @@index([brandProfileId])
+
+  @@index([createdAt])
+
+  @@map("activity_logs")
+
+}
+
+model Notification {
+
+  id              String    @id @default(cuid())
+
+  recipientUserId String    @map("recipient_user_id")
+
+  type            String
+
+  title           String
+
+  body            String?   @db.Text
+
+  link            String?
+
+  read            Boolean   @default(false)
+
+  readAt          DateTime? @map("read_at")
+
+  metadata        Json?
+
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  recipient User @relation("NotificationRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([recipientUserId, read])
+
+  @@index([createdAt])
+
+  @@map("notifications")
+
+}
+
+model DeviceToken {
+
+  id        String   @id @default(cuid())
+
+  userId    String   @map("user_id")
+
+  token     String   @unique
+
+  platform  String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+
+  @@map("device_tokens")
 
 }
 
@@ -393,6 +571,10 @@ model Campaign {
   platform         String              @default("instagram_reel")
 
   platforms        String[]            @default([])
+
+  locationType     String              @default("pan_india") @map("location_type")
+
+  targetStates     String[]            @default([]) @map("target_states")
 
   status           CampaignStatus      @default(draft)
 
@@ -554,6 +736,8 @@ model CampaignParticipation {
 
   creatorId         String   @map("creator_id")
 
+  creatorProfileId  String   @map("creator_profile_id")
+
   platformsSnapshot String[] @map("platforms_snapshot")
 
   joinedAt          DateTime @default(now()) @map("joined_at")
@@ -562,19 +746,63 @@ model CampaignParticipation {
 
 
 
-  campaign     Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign       Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
-  creator      User                @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  creator        User                @relation(fields: [creatorId], references: [id], onDelete: Cascade)
 
-  deliverables FormatDeliverable[]
+  creatorProfile CreatorProfile      @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+  deliverables   FormatDeliverable[]
 
 
 
-  @@unique([campaignId, creatorId])
+  @@unique([campaignId, creatorProfileId])
 
   @@index([creatorId])
 
+  @@index([creatorProfileId])
+
   @@map("campaign_participations")
+
+}
+
+
+
+model CreatorProfile {
+
+  id        String   @id @default(cuid())
+
+  userId    String   @map("user_id")
+
+  platform  String
+
+  handle    String
+
+  label     String?
+
+  avatarUrl String?  @map("avatar_url")
+
+  isDefault   Boolean  @default(false) @map("is_default")
+
+  socialLinks Json?    @default("{}") @map("social_links")
+
+  socialStats Json?    @default("{}") @map("social_stats")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+
+
+  user           User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  participations CampaignParticipation[]
+
+
+
+  @@unique([userId, platform, handle])
+
+  @@index([userId])
+
+  @@map("creator_profiles")
 
 }
 
@@ -615,6 +843,10 @@ model FormatDeliverable {
   proofReviewedAt    DateTime?               @map("proof_reviewed_at")
 
   reviewedByUserId   String?                 @map("reviewed_by_user_id")
+
+  paidAt             DateTime?               @map("paid_at")
+
+  paidAmountPaise    Int?                    @map("paid_amount_paise")
 
   updatedAt          DateTime                @updatedAt @map("updated_at")
 
@@ -730,19 +962,25 @@ model Transaction {
 
 model PayoutMethod {
 
-  id            String   @id @default(cuid())
+  id                String   @id @default(cuid())
 
-  userId        String   @map("user_id")
+  userId            String   @map("user_id")
 
-  type          String
+  type              String
 
-  label         String
+  label             String
 
-  accountMasked String   @map("account_masked")
+  accountHolderName String   @map("account_holder_name")
 
-  isDefault     Boolean  @default(false) @map("is_default")
+  accountNumber     String   @map("account_number")
 
-  createdAt     DateTime @default(now()) @map("created_at")
+  ifscCode          String?  @map("ifsc_code")
+
+  accountMasked     String   @map("account_masked")
+
+  isDefault         Boolean  @default(false) @map("is_default")
+
+  createdAt         DateTime @default(now()) @map("created_at")
 
 
 

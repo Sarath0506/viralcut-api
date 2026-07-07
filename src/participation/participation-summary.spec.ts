@@ -16,13 +16,35 @@ function d(
 }
 
 describe("computeParticipationSummary", () => {
-  it("returns closed when campaign is not live", () => {
+  it("returns closed when campaign is closed", () => {
+    expect(
+      computeParticipationSummary(
+        [d(FormatDeliverableStatus.draft_pending)],
+        CampaignStatus.closed,
+      ),
+    ).toBe("closed");
+  });
+
+  it("reflects real deliverable progress when campaign is only paused", () => {
     expect(
       computeParticipationSummary(
         [d(FormatDeliverableStatus.draft_pending)],
         CampaignStatus.paused,
       ),
-    ).toBe("closed");
+    ).toBe("joined");
+
+    expect(
+      computeParticipationSummary(
+        [
+          d(
+            FormatDeliverableStatus.live_submitted,
+            "https://drive.google.com/a",
+            "https://instagram.com/reel/1",
+          ),
+        ],
+        CampaignStatus.paused,
+      ),
+    ).toBe("proof_complete");
   });
 
   it("returns joined when all deliverables are draft_pending", () => {

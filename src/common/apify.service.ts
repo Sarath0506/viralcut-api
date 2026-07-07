@@ -10,6 +10,18 @@ export type PlatformViewResult = {
   platform: "instagram" | "youtube" | "twitter" | "unknown";
 };
 
+export type SocialProfileStats = {
+  platform: "instagram" | "youtube" | "twitter";
+  handle: string;
+  displayName: string | null;
+  followersCount: number;
+  followingCount: number;
+  postsCount: number;
+  profilePicUrl: string | null;
+  bio: string | null;
+  fetchedAt: string;
+};
+
 @Injectable()
 export class ApifyService {
   private readonly logger = new Logger(ApifyService.name);
@@ -64,14 +76,17 @@ export class ApifyService {
 
   private async runActorAndGetDataset(actorId: string, input: object): Promise<any[]> {
     const baseUrl = "https://api.apify.com/v2";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 150_000);
     const runRes = await fetch(
-      `${baseUrl}/acts/${actorId}/run-sync-get-dataset-items?token=${this.apiToken}&timeout=60`,
+      `${baseUrl}/acts/${actorId}/run-sync-get-dataset-items?token=${this.apiToken}&timeout=120`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
+        signal: controller.signal,
       },
-    );
+    ).finally(() => clearTimeout(timer));
     if (!runRes.ok) {
       const body = await runRes.text();
       throw new Error(`Apify actor ${actorId} returned ${runRes.status}: ${body}`);
@@ -124,6 +139,139 @@ export class ApifyService {
       likeCount:    t.likeCount ?? t.likes ?? t.favoriteCount ?? 0,
       commentCount: t.replyCount ?? t.replies ?? 0,
       shareCount:   t.retweetCount ?? t.retweets ?? 0,
+    };
+  }
+
+  /** Normalise a handle/username input to a full profile URL for the platform. */
+  normalizeProfileUrl(platform: "instagram" | "youtube" | "twitter", input: string): string {
+    const s = input.trim().replace(/^@/, "");
+    if (platform === "instagram") {
+      if (/instagram\.com/i.test(s)) return s.split("?")[0];
+      return `https://www.instagram.com/${s}/`;
+    }
+    if (platform === "youtube") {
+      if (/youtube\.com|youtu\.be/i.test(s)) return s;
+      return `https://www.youtube.com/@${s}`;
+    }
+    // twitter
+    if (/twitter\.com|x\.com/i.test(s)) return s;
+    return `https://x.com/${s}`;
+  }
+
+  async getSocialProfileStats(
+    platform: "instagram" | "youtube" | "twitter",
+    handleOrUrl: string,
+  ): Promise<SocialProfileStats | null> {
+    if (!this.isConfigured) return null;
+    const profileUrl = this.normalizeProfileUrl(platform, handleOrUrl);
+    try {
+      if (platform === "instagram") return await this.fetchInstagramProfile(profileUrl);
+      if (platform === "youtube") return await this.fetchYouTubeProfile(profileUrl);
+      return await this.fetchTwitterProfile(profileUrl);
+    } catch (err) {
+      this.logger.error(`Profile stats failed for ${platform}/${handleOrUrl}: ${err}`);
+      return null;
+    }
+  }
+
+  private async fetchInstagramProfile(profileUrl: string): Promise<SocialProfileStats> {
+    // Extract username from URL or raw input
+    const username = profileUrl
+      .replace(/\/$/, "")
+      .split("/")
+      .filter(Boolean)
+      .pop()
+      ?.split("?")[0] ?? "";
+
+    let items: any[] = [];
+
+    // Attempt 1: usernames without resultsType — returns profile object directly
+    try {
+      items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
+        usernames: [username],
+        resultsLimit: 1,
+      });
+      items = items.filter((i) => !i?.error);
+    } catch (_) {}
+
+    // Attempt 2: usernames with resultsType details (works for accounts with posts)
+    if (!items.length) {
+      try {
+        items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
+          usernames: [username],
+          resultsType: "details",
+          resultsLimit: 3,
+        });
+        items = items.filter((i) => !i?.error);
+      } catch (_) {}
+    }
+
+    // Attempt 3: directUrls fallback
+    if (!items.length) {
+      try {
+        items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
+          directUrls: [profileUrl],
+          resultsType: "details",
+          resultsLimit: 3,
+        });
+        items = items.filter((i) => !i?.error);
+      } catch (_) {}
+    }
+
+    if (!items.length || items[0]?.error) {
+      throw new Error(`Instagram: no profile found for "${username}". Account may be private or not exist.`);
+    }
+
+    const p = items[0];
+    return {
+      platform: "instagram",
+      handle: p.username ?? username,
+      displayName: p.fullName ?? p.name ?? null,
+      followersCount: p.followersCount ?? p.followers ?? 0,
+      followingCount: p.followsCount ?? p.following ?? 0,
+      postsCount: p.postsCount ?? p.mediaCount ?? p.igtvVideoCount ?? 0,
+      profilePicUrl: p.profilePicUrl ?? p.profilePicUrlHD ?? null,
+      bio: p.biography ?? null,
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  private async fetchYouTubeProfile(channelUrl: string): Promise<SocialProfileStats> {
+    const items = await this.runActorAndGetDataset(ApifyService.ACTORS.youtube, {
+      startUrls: [{ url: channelUrl }],
+      maxResults: 1,
+    });
+    const c = items[0] ?? {};
+    return {
+      platform: "youtube",
+      handle: c.channelHandle ?? c.channel ?? channelUrl,
+      displayName: c.channelName ?? c.title ?? null,
+      followersCount: c.subscriberCount ?? c.subscribers ?? 0,
+      followingCount: 0,
+      postsCount: c.videoCount ?? c.videos ?? 0,
+      profilePicUrl: c.channelThumbnail ?? null,
+      bio: c.channelDescription ?? null,
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  private async fetchTwitterProfile(profileUrl: string): Promise<SocialProfileStats> {
+    const handle = profileUrl.replace(/\/$/, "").split("/").pop() ?? "";
+    const items = await this.runActorAndGetDataset("apidojo~twitter-user-scraper", {
+      usernames: [handle],
+      maxItems: 1,
+    });
+    const u = items[0] ?? {};
+    return {
+      platform: "twitter",
+      handle: u.userName ?? u.username ?? handle,
+      displayName: u.displayName ?? u.name ?? null,
+      followersCount: u.followersCount ?? u.followers ?? 0,
+      followingCount: u.followingCount ?? u.following ?? 0,
+      postsCount: u.tweetCount ?? u.statusesCount ?? 0,
+      profilePicUrl: u.profilePicture ?? u.profileImageUrl ?? null,
+      bio: u.description ?? null,
+      fetchedAt: new Date().toISOString(),
     };
   }
 }

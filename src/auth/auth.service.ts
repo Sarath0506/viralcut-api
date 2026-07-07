@@ -15,6 +15,7 @@ import { parseDurationMs } from "../common/parse-duration";
 import type { Env } from "../config/env";
 import { PrismaService } from "../prisma/prisma.service";
 import { EmailService } from "../notifications/email.service";
+import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import type { AuthJwtPayload, AuthTokens } from "./auth.types";
 import { hashRefreshToken, OtpService } from "./otp.service";
 import type { AdminLoginDto } from "./dto/admin-auth.dto";
@@ -29,6 +30,7 @@ export class AuthService {
     private readonly config: ConfigService<Env, true>,
     private readonly otp: OtpService,
     private readonly email: EmailService,
+    private readonly notifications: InAppNotificationService,
   ) {}
 
   async registerBrand(dto: BrandRegisterDto) {
@@ -49,7 +51,7 @@ export class AuthService {
       },
     });
 
-    await this.prisma.$transaction([
+    const [brandProfile] = await this.prisma.$transaction([
       this.prisma.brandProfile.create({
         data: {
           userId: user.id,
@@ -58,6 +60,13 @@ export class AuthService {
       }),
       this.prisma.wallet.create({ data: { userId: user.id } }),
     ]);
+
+    await this.notifications.notifyAllAdmins({
+      type: "brand.registered",
+      title: "New brand registered",
+      body: dto.companyName.trim(),
+      link: `/admin/brands/${brandProfile.id}`,
+    });
 
     return this.issueTokens(user);
   }
@@ -102,6 +111,10 @@ export class AuthService {
     }
 
     if (user.role !== UserRole.brand && user.role !== UserRole.staff) {
+      throw invalidBrandCredentials();
+    }
+
+    if (user.role === UserRole.staff && !user.isActive) {
       throw invalidBrandCredentials();
     }
 

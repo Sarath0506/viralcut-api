@@ -20,8 +20,11 @@ export class WalletController {
 
   @Get()
   @ApiOkResponse({ type: WalletDto })
-  getWallet(@CurrentUser() user: AuthJwtPayload) {
-    return this.wallet.getWallet(user.sub);
+  getWallet(
+    @CurrentUser() user: AuthJwtPayload,
+    @Query("creatorProfileId") creatorProfileId?: string,
+  ) {
+    return this.wallet.getWallet(user.sub, creatorProfileId);
   }
 
   @Get("transactions")
