@@ -185,18 +185,18 @@ export class ApifyService {
 
     let items: any[] = [];
 
-    // Primary: use usernames field (more reliable than directUrls for profiles)
+    // Use "profiles" resultsType to get follower/account data directly (not posts)
     try {
       items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
         usernames: [username],
-        resultsType: "details",
+        resultsType: "profiles",
         resultsLimit: 1,
       });
     } catch (_) {
       // Fallback to directUrls
       items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
         directUrls: [profileUrl],
-        resultsType: "details",
+        resultsType: "profiles",
         resultsLimit: 1,
       });
     }
