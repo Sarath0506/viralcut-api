@@ -40,10 +40,37 @@ export class CreatorProfilesService {
   }
 
   async list(userId: string) {
-    const profiles = await this.prisma.creatorProfile.findMany({
-      where: { userId },
-      orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
-    });
+    const [profiles, user] = await Promise.all([
+      this.prisma.creatorProfile.findMany({
+        where: { userId },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+      }),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { socialStats: true },
+      }),
+    ]);
+
+    const userStats = (user?.socialStats as Record<string, unknown> | null) ?? {};
+
+    // Backfill profiles that have socialLinks but missing socialStats — copy from global user stats
+    const backfills: Promise<unknown>[] = [];
+    for (const profile of profiles) {
+      const links = (profile.socialLinks as Record<string, string> | null) ?? {};
+      const stats = (profile.socialStats as Record<string, unknown> | null) ?? {};
+      const missing = Object.keys(links).filter((p) => !stats[p] && userStats[p]);
+      if (missing.length > 0) {
+        const merged = { ...stats };
+        for (const p of missing) merged[p] = userStats[p];
+        backfills.push(
+          this.prisma.creatorProfile
+            .update({ where: { id: profile.id }, data: { socialStats: merged as Prisma.InputJsonValue } })
+            .then(() => { profile.socialStats = merged as Prisma.JsonValue; }),
+        );
+      }
+    }
+    if (backfills.length > 0) await Promise.all(backfills);
+
     return profiles.map((p) => this.format(p));
   }
 
