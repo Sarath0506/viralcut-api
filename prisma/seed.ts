@@ -11,18 +11,20 @@ const demoCreators = [
     displayName: "Demo Creator",
     email: "demo@halchal.test",
     username: "demo_creator",
+    profileHandle: "demo_creator",
   },
   {
     phone: "+919876543211",
     displayName: "Test Creator",
     email: "test@halchal.test",
     username: "test_creator",
+    profileHandle: "test_creator",
   },
 ] as const;
 
 async function main(): Promise<void> {
   for (const creator of demoCreators) {
-    await prisma.user.upsert({
+    const user = await prisma.user.upsert({
       where: { phone: creator.phone },
       create: {
         role: UserRole.creator,
@@ -39,6 +41,27 @@ async function main(): Promise<void> {
         email: creator.email,
         username: creator.username,
         fixedOtpCode: DEMO_OTP,
+      },
+    });
+
+    await prisma.creatorProfile.upsert({
+      where: {
+        userId_platform_handle: {
+          userId: user.id,
+          platform: "instagram",
+          handle: creator.profileHandle,
+        },
+      },
+      create: {
+        userId: user.id,
+        platform: "instagram",
+        handle: creator.profileHandle,
+        label: creator.displayName,
+        isDefault: true,
+      },
+      update: {
+        label: creator.displayName,
+        isDefault: true,
       },
     });
   }

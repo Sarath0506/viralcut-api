@@ -331,4 +331,30 @@ export class UsersService {
 
     return { changed: true };
   }
+
+  async deleteMe(userId: string) {
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+      this.prisma.deviceToken.deleteMany({ where: { userId } }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          isActive: false,
+          email: null,
+          phone: null,
+          username: null,
+          displayName: `deleted_${userId.slice(0, 8)}`,
+          avatarUrl: null,
+          bio: null,
+          socialLinks: Prisma.JsonNull,
+          socialStats: Prisma.JsonNull,
+          kycDocumentUrl: null,
+        },
+      }),
+    ]);
+    return { deleted: true };
+  }
 }

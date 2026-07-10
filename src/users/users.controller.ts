@@ -65,6 +65,11 @@ export class UsersController {
     return this.users.updateProfile(user.sub, body);
   }
 
+  @Delete("me")
+  deleteMe(@CurrentUser() user: AuthJwtPayload) {
+    return this.users.deleteMe(user.sub);
+  }
+
   @Delete("me/social-stats/:platform")
   async disconnectSocial(
     @CurrentUser() user: AuthJwtPayload,
