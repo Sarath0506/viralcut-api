@@ -217,6 +217,11 @@ export class AdminController {
     return this.admin.reactivateStaff(staffId);
   }
 
+  @Delete("team-members/:staffId")
+  deleteStaff(@Param("staffId") staffId: string) {
+    return this.admin.deleteStaff(staffId);
+  }
+
   @Get("team-members/:staffId/activity")
   getStaffActivity(@Param("staffId") staffId: string) {
     return this.admin.getStaffActivity(staffId);

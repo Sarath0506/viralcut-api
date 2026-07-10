@@ -125,6 +125,11 @@ export class AdminService {
             _count: { select: { submissions: true } },
           },
         },
+        staffAssignments: {
+          include: {
+            staffUser: { select: { id: true, displayName: true, email: true } },
+          },
+        },
       },
     });
     if (!b) throw new NotFoundException({ code: "NOT_FOUND", message: "Brand not found" });
@@ -143,6 +148,12 @@ export class AdminService {
       campaigns: b.campaigns.map((c) => ({
         ...this.campaigns.formatCampaign(c),
         submissionCount: c._count.submissions,
+      })),
+      assignedStaff: b.staffAssignments.map((a) => ({
+        id: a.staffUser.id,
+        name: a.staffUser.displayName ?? a.staffUser.email ?? "",
+        email: a.staffUser.email ?? "",
+        accessLevel: a.accessLevel,
       })),
     };
   }
@@ -403,6 +414,18 @@ export class AdminService {
       targetId: staffUserId,
     });
     return { reactivated: true };
+  }
+
+  async deleteStaff(staffUserId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: staffUserId } });
+    if (!user || user.role !== UserRole.staff) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Team member not found" });
+    }
+    if (user.isActive) {
+      throw new BadRequestException({ code: "MUST_DEACTIVATE_FIRST", message: "Deactivate the team member before deleting." });
+    }
+    await this.prisma.user.delete({ where: { id: staffUserId } });
+    return { deleted: true };
   }
 
   async getStaffActivity(staffUserId: string, limit = 50) {

@@ -21,6 +21,7 @@ import {
   CreatePayoutMethodDto,
   CreateWithdrawalDto,
   PayoutMethodDto,
+  UpdatePayoutMethodDto,
   WithdrawalDto,
 } from "./dto/payout.dto";
 import { PayoutsService } from "./payouts.service";
@@ -45,6 +46,16 @@ export class PayoutsController {
     @Body() dto: CreatePayoutMethodDto,
   ) {
     return this.payouts.createPayoutMethod(user.sub, dto);
+  }
+
+  @Patch("payout-methods/:id")
+  @ApiOkResponse({ type: PayoutMethodDto })
+  updateMethod(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Body() dto: UpdatePayoutMethodDto,
+  ) {
+    return this.payouts.updatePayoutMethod(user.sub, id, dto);
   }
 
   @Patch("payout-methods/:id/default")

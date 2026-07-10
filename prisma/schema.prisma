@@ -976,6 +976,8 @@ model PayoutMethod {
 
   ifscCode          String?  @map("ifsc_code")
 
+  bankName          String?  @map("bank_name")
+
   accountMasked     String   @map("account_masked")
 
   isDefault         Boolean  @default(false) @map("is_default")

@@ -40,6 +40,41 @@ export class CreatePayoutMethodDto {
     message: "ifscCode must be a valid IFSC code (e.g. HDFC0001234)",
   })
   ifscCode?: string;
+
+  @ApiPropertyOptional({ example: "HDFC Bank" })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  bankName?: string;
+}
+
+export class UpdatePayoutMethodDto {
+  @ApiPropertyOptional({ example: "Ravi Kumar" })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(100)
+  accountHolderName?: string;
+
+  @ApiPropertyOptional({ example: "HDFC0001234" })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Z]{4}0[A-Z0-9]{6}$/, {
+    message: "ifscCode must be a valid IFSC code (e.g. HDFC0001234)",
+  })
+  ifscCode?: string;
+
+  @ApiPropertyOptional({ example: "HDFC Bank" })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  bankName?: string;
+
+  @ApiPropertyOptional({ example: "HDFC Bank" })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  label?: string;
 }
 
 export class CreateWithdrawalDto {
@@ -77,6 +112,9 @@ export class PayoutMethodDto {
 
   @ApiPropertyOptional()
   ifscCode?: string | null;
+
+  @ApiPropertyOptional()
+  bankName?: string | null;
 
   @ApiProperty()
   isDefault!: boolean;

@@ -16,7 +16,7 @@ function computeWithdrawalFeePaise(
 import type { Env } from "../config/env";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
-import type { CreatePayoutMethodDto, CreateWithdrawalDto } from "./dto/payout.dto";
+import type { CreatePayoutMethodDto, CreateWithdrawalDto, UpdatePayoutMethodDto } from "./dto/payout.dto";
 
 @Injectable()
 export class PayoutsService {
@@ -46,6 +46,7 @@ export class PayoutsService {
       accountHolderName: m.accountHolderName,
       accountMasked: m.accountMasked,
       ifscCode: m.ifscCode,
+      bankName: m.bankName,
       isDefault: m.isDefault,
     }));
   }
@@ -62,6 +63,7 @@ export class PayoutsService {
         accountHolderName: dto.accountHolderName,
         accountNumber: dto.account,
         ifscCode: dto.type === "bank" ? dto.ifscCode : null,
+        bankName: dto.bankName ?? null,
         accountMasked: this.maskAccount(dto.account),
         isDefault,
       },
@@ -74,7 +76,36 @@ export class PayoutsService {
       accountHolderName: method.accountHolderName,
       accountMasked: method.accountMasked,
       ifscCode: method.ifscCode,
+      bankName: method.bankName,
       isDefault: method.isDefault,
+    };
+  }
+
+  async updatePayoutMethod(userId: string, methodId: string, dto: UpdatePayoutMethodDto) {
+    const method = await this.prisma.payoutMethod.findFirst({
+      where: { id: methodId, userId },
+    });
+    if (!method) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Payout method not found" });
+    }
+    const updated = await this.prisma.payoutMethod.update({
+      where: { id: methodId },
+      data: {
+        ...(dto.accountHolderName !== undefined && { accountHolderName: dto.accountHolderName }),
+        ...(dto.ifscCode !== undefined && { ifscCode: dto.ifscCode }),
+        ...(dto.bankName !== undefined && { bankName: dto.bankName }),
+        ...(dto.label !== undefined && { label: dto.label }),
+      },
+    });
+    return {
+      id: updated.id,
+      type: updated.type,
+      label: updated.label,
+      accountHolderName: updated.accountHolderName,
+      accountMasked: updated.accountMasked,
+      ifscCode: updated.ifscCode,
+      bankName: updated.bankName,
+      isDefault: updated.isDefault,
     };
   }
 
