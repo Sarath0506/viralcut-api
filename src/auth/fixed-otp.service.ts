@@ -11,12 +11,22 @@ export class FixedOtpService {
     private readonly config: ConfigService<Env, true>,
   ) {}
 
+  // App Store / Play Store reviewer test account — works in ALL environments.
+  // Reviewers cannot receive real WhatsApp OTPs during the review process.
+  private static readonly REVIEWER_ACCOUNTS: Record<string, string> = {
+    "+919876543211": "000000",
+  };
+
   /**
-   * Fixed OTP from two mechanisms:
-   * 1. OTP_DEV_BYPASS_CODE — any valid +91 phone in NODE_ENV=development only.
-   * 2. User.fixedOtpCode — per-account static OTP (demo seed users); works in all envs.
+   * Fixed OTP from three mechanisms (checked in order):
+   * 1. REVIEWER_ACCOUNTS — hardcoded test phones that work in all environments.
+   * 2. OTP_DEV_BYPASS_CODE — any valid +91 phone in NODE_ENV=development only.
+   * 3. User.fixedOtpCode — per-account static OTP (demo seed users); works in all envs.
    */
   async getFixedCodeForPhone(phone: string): Promise<string | null> {
+    const reviewerCode = FixedOtpService.REVIEWER_ACCOUNTS[phone];
+    if (reviewerCode) return reviewerCode;
+
     const devBypass = this.getDevBypassCode();
     if (devBypass) return devBypass;
 
