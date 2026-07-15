@@ -26,14 +26,14 @@ const envSchema = z.object({
   WITHDRAWAL_FEE_BPS: z.coerce.number().default(150),
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
   WHATSAPP_ACCESS_TOKEN: z.string().optional(),
-  WHATSAPP_API_VERSION: z.string().default("v22.0"),
+  WHATSAPP_API_VERSION: z.string().default("v25.0"),
   WHATSAPP_OTP_TEMPLATE_NAME: z.string().optional(),
-  /** Meta template language code, e.g. en_US or en (must match approved template). */
-  WHATSAPP_OTP_TEMPLATE_LANGUAGE: z.string().default("en_US"),
-  /** Set true only if your WhatsApp template includes a URL button with OTP param. */
+  /** Meta template language code, e.g. en or en_US (must match approved template). */
+  WHATSAPP_OTP_TEMPLATE_LANGUAGE: z.string().default("en"),
+  /** Set false only if your WhatsApp template has no URL button. Defaults true (halchal_otp_login has a button). */
   WHATSAPP_OTP_TEMPLATE_HAS_BUTTON: z
     .string()
-    .optional()
+    .default("true")
     .transform((v) => v === "true" || v === "1"),
   /** Resend HTTP API key (preferred on Railway; same `re_...` key as SMTP password). */
   RESEND_API_KEY: z.string().optional(),
@@ -42,7 +42,7 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
-  OTP_TTL_SECONDS: z.coerce.number().default(300),
+  OTP_TTL_SECONDS: z.coerce.number().default(600),
   OTP_MAX_ATTEMPTS: z.coerce.number().default(5),
   /** When true, log OTP codes in API console (use with NODE_ENV=development). */
   OTP_DEV_LOG: z

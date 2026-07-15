@@ -25,7 +25,8 @@ export class OtpService {
     private readonly fixedOtp: FixedOtpService,
   ) {}
 
-  async requestOtp(phone: string): Promise<{ expiresInSeconds: number }> {
+  async requestOtp(rawPhone: string): Promise<{ expiresInSeconds: number }> {
+    const phone = normalizePhone(rawPhone);
     const recent = await this.prisma.otpSession.count({
       where: {
         phone,
@@ -74,7 +75,8 @@ export class OtpService {
     return { expiresInSeconds: ttl };
   }
 
-  async verifyOtp(phone: string, code: string): Promise<void> {
+  async verifyOtp(rawPhone: string, code: string): Promise<void> {
+    const phone = normalizePhone(rawPhone);
     const fixedCode = await this.fixedOtp.getFixedCodeForPhone(phone);
     if (fixedCode && code === fixedCode) {
       await this.prisma.otpSession.deleteMany({ where: { phone } });
@@ -122,4 +124,15 @@ export class OtpService {
 
 export function hashRefreshToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Normalise an Indian mobile number to E.164 (+91XXXXXXXXXX).
+ * Accepts: 10-digit bare number, 91-prefixed 12-digit, or already-formatted +91.
+ */
+export function normalizePhone(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+  return raw;
 }
