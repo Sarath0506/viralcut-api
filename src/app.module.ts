@@ -10,6 +10,7 @@ import { TransformInterceptor } from "./common/interceptors/transform.intercepto
 import { AccessModule } from "./access/access.module";
 import { ActivityModule } from "./activity/activity.module";
 import { AdminModule } from "./admin/admin.module";
+import { AppVersionModule } from "./app-version/app-version.module";
 import { StaffModule } from "./staff/staff.module";
 import { AuthModule } from "./auth/auth.module";
 import { CampaignsModule } from "./campaigns/campaigns.module";
@@ -68,6 +69,7 @@ import { WalletModule } from "./wallet/wallet.module";
     CreatorsModule,
     TasksModule,
     HealthModule,
+    AppVersionModule,
   ],
   providers: [
     {

@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -48,6 +49,32 @@ class CreateBrandDto {
 
   @IsEmail()
   companyEmail!: string;
+
+  @IsOptional()
+  @IsString()
+  pocName?: string;
+
+  @IsOptional()
+  @IsString()
+  pocPhone?: string;
+
+  @IsOptional()
+  @IsEmail()
+  pocEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  logoUrl?: string;
+}
+
+class UpdateBrandDto {
+  @IsOptional()
+  @IsString()
+  companyName?: string;
+
+  @IsOptional()
+  @IsEmail()
+  companyEmail?: string;
 
   @IsOptional()
   @IsString()
@@ -136,6 +163,11 @@ export class AdminController {
   @Get("brands/:id")
   getBrand(@Param("id") id: string) {
     return this.admin.getBrand(id);
+  }
+
+  @Patch("brands/:id")
+  updateBrand(@Param("id") id: string, @Body() dto: UpdateBrandDto) {
+    return this.admin.updateBrand(id, dto);
   }
 
   @Get("creators")

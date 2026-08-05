@@ -114,6 +114,32 @@ export class AdminService {
     };
   }
 
+  async updateBrand(brandId: string, dto: {
+    companyName?: string;
+    companyEmail?: string;
+    pocName?: string;
+    pocPhone?: string;
+    pocEmail?: string;
+    logoUrl?: string;
+  }) {
+    const existing = await this.prisma.brandProfile.findUnique({ where: { id: brandId } });
+    if (!existing) throw new NotFoundException({ code: "NOT_FOUND", message: "Brand not found" });
+
+    await this.prisma.brandProfile.update({
+      where: { id: brandId },
+      data: {
+        companyName: dto.companyName?.trim() || undefined,
+        companyEmail: dto.companyEmail?.trim().toLowerCase() || undefined,
+        pocName: dto.pocName?.trim() ?? undefined,
+        pocPhone: dto.pocPhone?.trim() ?? undefined,
+        pocEmail: dto.pocEmail?.trim() ?? undefined,
+        logoUrl: dto.logoUrl?.trim() || undefined,
+      },
+    });
+
+    return this.getBrand(brandId);
+  }
+
   async getBrand(brandId: string) {
     const b = await this.prisma.brandProfile.findUnique({
       where: { id: brandId },

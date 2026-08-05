@@ -61,6 +61,11 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_PUBLIC_BASE_URL: z.string().url().optional(),
+  /** Latest published version, e.g. "1.2.0". Unset = no update banner shown. */
+  APP_LATEST_IOS_VERSION: z.string().optional(),
+  APP_LATEST_ANDROID_VERSION: z.string().optional(),
+  APP_STORE_URL: z.string().url().optional(),
+  PLAY_STORE_URL: z.string().url().optional(),
 }).superRefine((data, ctx) => {
   const r2Fields = [
     ["S3_ENDPOINT", data.S3_ENDPOINT],
