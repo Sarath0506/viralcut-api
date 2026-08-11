@@ -280,8 +280,6 @@ model User {
 
   youtubeConnections         YoutubeConnection[]
 
-
-
   @@map("users")
 
 }
@@ -807,8 +805,6 @@ model CreatorProfile {
   instagramConnections InstagramConnection[]
 
   youtubeConnections YoutubeConnection[]
-
-
 
   @@unique([userId, platform, handle])
 
