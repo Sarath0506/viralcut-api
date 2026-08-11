@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
@@ -19,6 +20,8 @@ import { RolesGuard } from "../common/guards/roles.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { CreatorProfilesService } from "./creator-profiles.service";
 import { CreateCreatorProfileDto } from "./dto/creator-profile.dto";
+import { InstagramOAuthService } from "./instagram-oauth.service";
+import { YoutubeOAuthService } from "./youtube-oauth.service";
 
 @ApiTags("creator")
 @ApiBearerAuth()
@@ -26,7 +29,11 @@ import { CreateCreatorProfileDto } from "./dto/creator-profile.dto";
 @Roles(UserRole.creator)
 @Controller("creator/profiles")
 export class CreatorProfilesController {
-  constructor(private readonly profiles: CreatorProfilesService) {}
+  constructor(
+    private readonly profiles: CreatorProfilesService,
+    private readonly instagramOAuth: InstagramOAuthService,
+    private readonly youtubeOAuth: YoutubeOAuthService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: AuthJwtPayload) {
@@ -51,6 +58,49 @@ export class CreatorProfilesController {
     return this.profiles.delete(user.sub, id);
   }
 
+  @Post(":id/social/instagram/oauth/start")
+  startInstagramOAuth(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+  ) {
+    return this.instagramOAuth.start(user.sub, id);
+  }
+
+  @Post(":id/social/instagram/oauth/:transactionId/complete")
+  completeInstagramOAuth(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Param("transactionId") transactionId: string,
+  ) {
+    return this.instagramOAuth.complete(user.sub, id, transactionId);
+  }
+
+  @Delete(":id/social/instagram")
+  disconnectInstagram(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+  ) {
+    return this.instagramOAuth.disconnect(user.sub, id);
+  }
+
+  @Get(":id/social/youtube/auth-url")
+  getYoutubeAuthUrl(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Query("state") state?: string,
+  ) {
+    return this.youtubeOAuth.authUrl(user.sub, id, state);
+  }
+
+  @Post(":id/social/youtube/connect")
+  connectYoutube(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Body("code") code: string,
+  ) {
+    return this.youtubeOAuth.connect(user.sub, id, code);
+  }
+
   @Post(":id/social/:platform")
   connectSocial(
     @CurrentUser() user: AuthJwtPayload,
@@ -61,6 +111,12 @@ export class CreatorProfilesController {
     const allowed = ["instagram", "youtube", "twitter"] as const;
     if (!allowed.includes(platform as never)) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    if (platform === "instagram" || platform === "youtube") {
+      throw new BadRequestException({
+        code: "OFFICIAL_OAUTH_REQUIRED",
+        message: `${platform} must be connected with official OAuth.`,
+      });
     }
     if (!handle?.trim()) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "handle is required" });
@@ -77,6 +133,12 @@ export class CreatorProfilesController {
     const allowed = ["instagram", "youtube", "twitter"] as const;
     if (!allowed.includes(platform as never)) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    if (platform === "instagram") {
+      return this.instagramOAuth.disconnect(user.sub, id);
+    }
+    if (platform === "youtube") {
+      return this.youtubeOAuth.disconnect(user.sub, id);
     }
     return this.profiles.disconnectSocial(user.sub, id, platform);
   }
