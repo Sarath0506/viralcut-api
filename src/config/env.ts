@@ -15,6 +15,8 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   /** Unified portal public URL (reset links, invite links). */
   WEB_URL: z.string().url().default("http://localhost:3000"),
+  /** Staff portal URL — used in welcome emails. Falls back to WEB_URL if unset. */
+  STAFF_WEB_URL: z.string().url().optional(),
   /** @deprecated use WEB_URL */
   BRAND_WEB_URL: z.string().url().optional(),
   /** @deprecated use WEB_URL */
@@ -24,14 +26,14 @@ const envSchema = z.object({
   WITHDRAWAL_FEE_BPS: z.coerce.number().default(150),
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
   WHATSAPP_ACCESS_TOKEN: z.string().optional(),
-  WHATSAPP_API_VERSION: z.string().default("v22.0"),
+  WHATSAPP_API_VERSION: z.string().default("v25.0"),
   WHATSAPP_OTP_TEMPLATE_NAME: z.string().optional(),
-  /** Meta template language code, e.g. en_US or en (must match approved template). */
-  WHATSAPP_OTP_TEMPLATE_LANGUAGE: z.string().default("en_US"),
-  /** Set true only if your WhatsApp template includes a URL button with OTP param. */
+  /** Meta template language code, e.g. en or en_US (must match approved template). */
+  WHATSAPP_OTP_TEMPLATE_LANGUAGE: z.string().default("en"),
+  /** Set false only if your WhatsApp template has no URL button. Defaults true (halchal_otp_login has a button). */
   WHATSAPP_OTP_TEMPLATE_HAS_BUTTON: z
     .string()
-    .optional()
+    .default("true")
     .transform((v) => v === "true" || v === "1"),
   /** Resend HTTP API key (preferred on Railway; same `re_...` key as SMTP password). */
   RESEND_API_KEY: z.string().optional(),
@@ -40,7 +42,7 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
-  OTP_TTL_SECONDS: z.coerce.number().default(300),
+  OTP_TTL_SECONDS: z.coerce.number().default(600),
   OTP_MAX_ATTEMPTS: z.coerce.number().default(5),
   /** When true, log OTP codes in API console (use with NODE_ENV=development). */
   OTP_DEV_LOG: z
@@ -59,6 +61,32 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_PUBLIC_BASE_URL: z.string().url().optional(),
+  /** Latest published version, e.g. "1.2.0". Unset = no update banner shown. */
+  APP_LATEST_IOS_VERSION: z.string().optional(),
+  APP_LATEST_ANDROID_VERSION: z.string().optional(),
+  APP_STORE_URL: z.string().url().optional(),
+  PLAY_STORE_URL: z.string().url().optional(),
+  /** Instagram Login for creator social connection. */
+  INSTAGRAM_APP_ID: z.string().optional(),
+  INSTAGRAM_APP_SECRET: z.string().optional(),
+  INSTAGRAM_REDIRECT_URI: z.string().url().optional(),
+  INSTAGRAM_GRAPH_API_VERSION: z.string().default("v23.0"),
+  INSTAGRAM_OAUTH_SCOPES: z.string().default("instagram_business_basic"),
+  INSTAGRAM_OAUTH_DEBUG_LOG_SECRETS: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  INSTAGRAM_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  /** Google OAuth for creator YouTube social connection. */
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  YOUTUBE_REDIRECT_URI: z.string().url().optional(),
+  YOUTUBE_OAUTH_SCOPES: z
+    .string()
+    .default(
+      "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly",
+    ),
+  YOUTUBE_TOKEN_ENCRYPTION_KEY: z.string().optional(),
 }).superRefine((data, ctx) => {
   const r2Fields = [
     ["S3_ENDPOINT", data.S3_ENDPOINT],

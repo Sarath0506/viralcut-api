@@ -1,0 +1,537 @@
+import {
+  BadGatewayException,
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { Prisma } from "@prisma/client";
+import {
+  createCipheriv,
+  createHash,
+  randomBytes,
+} from "node:crypto";
+
+import type { Env } from "../config/env";
+import { PrismaService } from "../prisma/prisma.service";
+import { CreatorProfilesService } from "./creator-profiles.service";
+
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const YOUTUBE_DATA_API = "https://www.googleapis.com/youtube/v3";
+const YOUTUBE_CALLBACK_SCHEME = "halchal://youtube-callback";
+
+type GoogleTokenResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+};
+
+type YoutubeChannelResponse = {
+  items?: Array<{
+    id: string;
+    snippet: {
+      title?: string;
+      customUrl?: string;
+      description?: string;
+      thumbnails?: {
+        default?: { url?: string };
+        high?: { url?: string };
+      };
+    };
+    statistics: {
+      subscriberCount?: string;
+      videoCount?: string;
+      viewCount?: string;
+      hiddenSubscriberCount?: boolean;
+    };
+  }>;
+  error?: { message?: string };
+};
+
+type YoutubeSearchResponse = {
+  items?: Array<{
+    id: { videoId: string };
+    snippet: {
+      title?: string;
+      publishedAt?: string;
+      thumbnails?: { default?: { url?: string }; medium?: { url?: string } };
+    };
+  }>;
+  error?: { message?: string };
+};
+
+type YoutubeVideosResponse = {
+  items?: Array<{
+    id: string;
+    statistics?: {
+      viewCount?: string;
+      likeCount?: string;
+      commentCount?: string;
+    };
+  }>;
+  error?: { message?: string };
+};
+
+type YoutubeProfile = {
+  channelId: string;
+  handle: string;
+  displayName: string;
+  subscriberCount: number;
+  videoCount: number;
+  totalViewCount: number;
+  profilePictureUrl: string | null;
+  biography: string | null;
+  engagementRate: number;
+  avgViews: number;
+  avgLikes: number;
+  avgComments: number;
+  topVideos: Array<{
+    videoId: string;
+    title: string;
+    thumbnail: string | null;
+    publishedAt: string | null;
+    viewCount: number;
+    likeCount: number;
+    commentCount: number;
+    permalink: string;
+  }>;
+  fetchedAt: string;
+};
+
+function oauthId(bytes = 24): string {
+  return randomBytes(bytes).toString("base64url");
+}
+
+function toInt(value: string | number | undefined | null): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+@Injectable()
+export class YoutubeOAuthService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly profiles: CreatorProfilesService,
+    private readonly config: ConfigService<Env, true>,
+  ) {}
+
+  async authUrl(userId: string, creatorProfileId: string, state?: string) {
+    this.requireConfig();
+    await this.profiles.assertOwnership(userId, creatorProfileId);
+    const oauthState = state?.trim() || oauthId(18);
+    const params = new URLSearchParams({
+      client_id: this.googleClientId,
+      redirect_uri: this.youtubeRedirectUri,
+      scope: this.youtubeScopes,
+      response_type: "code",
+      access_type: "offline",
+      prompt: "consent",
+      include_granted_scopes: "true",
+      state: oauthState,
+    });
+
+    return {
+      authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+      state: oauthState,
+    };
+  }
+
+  callback(query: { code?: string; state?: string; error?: string }) {
+    const params = new URLSearchParams();
+    if (query.error || !query.code) {
+      params.set("error", query.error || "access_denied");
+    } else {
+      params.set("code", query.code);
+      if (query.state) params.set("state", query.state);
+    }
+    const deepLink = `${YOUTUBE_CALLBACK_SCHEME}?${params.toString()}`;
+    return this.callbackHtml(deepLink, Boolean(query.error || !query.code));
+  }
+
+  async connect(userId: string, creatorProfileId: string, code: string) {
+    this.requireConfig();
+    if (!code?.trim()) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "YouTube authorization code is required.",
+      });
+    }
+    await this.profiles.assertOwnership(userId, creatorProfileId);
+
+    const token = await this.exchangeCode(code.trim());
+    const profile = await this.fetchProfile(token.accessToken);
+    const lastSyncedAt = new Date();
+    const stats = this.toSocialStats(profile);
+
+    await this.prisma.$transaction(async (tx) => {
+      const creatorProfile = await tx.creatorProfile.findFirst({
+        where: { id: creatorProfileId, userId },
+        select: { socialLinks: true, socialStats: true },
+      });
+      if (!creatorProfile) {
+        throw new BadRequestException({
+          code: "NOT_FOUND",
+          message: "Creator profile not found.",
+        });
+      }
+
+      const links =
+        (creatorProfile.socialLinks as Record<string, string> | null) ?? {};
+      const currentStats =
+        (creatorProfile.socialStats as Record<string, unknown> | null) ?? {};
+
+      await tx.youtubeConnection.upsert({
+        where: { creatorProfileId },
+        create: {
+          userId,
+          creatorProfileId,
+          platformUserId: profile.channelId,
+          platformHandle: profile.handle,
+          encryptedAccessToken: this.encrypt(token.accessToken),
+          encryptedRefreshToken: token.refreshToken
+            ? this.encrypt(token.refreshToken)
+            : null,
+          tokenExpiresAt: token.expiresAt,
+          subscriberCount: profile.subscriberCount,
+          videoCount: profile.videoCount,
+          totalViewCount: profile.totalViewCount,
+          engagementRate: profile.engagementRate,
+          profilePictureUrl: profile.profilePictureUrl,
+          metadata: this.toConnectionMetadata(profile, token.scopes) as Prisma.InputJsonValue,
+          isConnected: true,
+          lastSyncedAt,
+        },
+        update: {
+          platformUserId: profile.channelId,
+          platformHandle: profile.handle,
+          encryptedAccessToken: this.encrypt(token.accessToken),
+          encryptedRefreshToken: token.refreshToken
+            ? this.encrypt(token.refreshToken)
+            : undefined,
+          tokenExpiresAt: token.expiresAt,
+          subscriberCount: profile.subscriberCount,
+          videoCount: profile.videoCount,
+          totalViewCount: profile.totalViewCount,
+          engagementRate: profile.engagementRate,
+          profilePictureUrl: profile.profilePictureUrl,
+          metadata: this.toConnectionMetadata(profile, token.scopes) as Prisma.InputJsonValue,
+          isConnected: true,
+          lastSyncedAt,
+        },
+      });
+
+      await tx.creatorProfile.update({
+        where: { id: creatorProfileId },
+        data: {
+          socialLinks: {
+            ...links,
+            youtube: `https://www.youtube.com/channel/${profile.channelId}`,
+          } as Prisma.InputJsonValue,
+          socialStats: {
+            ...currentStats,
+            youtube: stats,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    return {
+      connected: true as const,
+      handle: profile.handle,
+      lastSyncedAt: lastSyncedAt.toISOString(),
+    };
+  }
+
+  async disconnect(userId: string, creatorProfileId: string) {
+    const profile = await this.profiles.assertOwnership(userId, creatorProfileId);
+    const links = { ...((profile.socialLinks as Record<string, string> | null) ?? {}) };
+    const stats = { ...((profile.socialStats as Record<string, unknown> | null) ?? {}) };
+    delete links.youtube;
+    delete stats.youtube;
+
+    await this.prisma.$transaction([
+      this.prisma.youtubeConnection.updateMany({
+        where: { userId, creatorProfileId },
+        data: { isConnected: false },
+      }),
+      this.prisma.creatorProfile.update({
+        where: { id: creatorProfileId },
+        data: {
+          socialLinks: links as Prisma.InputJsonValue,
+          socialStats: stats as Prisma.InputJsonValue,
+        },
+      }),
+    ]);
+
+    return { platform: "youtube", status: "disconnected" };
+  }
+
+  private async exchangeCode(code: string) {
+    const form = new URLSearchParams({
+      code,
+      client_id: this.googleClientId,
+      client_secret: this.googleClientSecret,
+      redirect_uri: this.youtubeRedirectUri,
+      grant_type: "authorization_code",
+    });
+    const res = await fetch(GOOGLE_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const data = (await res.json().catch(() => ({}))) as GoogleTokenResponse;
+    if (!res.ok || !data.access_token || !data.expires_in) {
+      throw new BadRequestException({
+        code: "YOUTUBE_TOKEN_EXCHANGE_FAILED",
+        message:
+          data.error_description ??
+          data.error ??
+          "YouTube authorization code exchange failed.",
+      });
+    }
+
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? null,
+      expiresAt: new Date(Date.now() + data.expires_in * 1000),
+      scopes: (data.scope ?? "").split(/\s+/).filter(Boolean),
+    };
+  }
+
+  private async fetchProfile(accessToken: string): Promise<YoutubeProfile> {
+    const channel = await this.youtubeGet<YoutubeChannelResponse>(
+      "/channels?part=snippet,statistics&mine=true",
+      accessToken,
+    );
+    const item = channel.items?.[0];
+    if (!item) {
+      throw new BadRequestException({
+        code: "YOUTUBE_CHANNEL_NOT_FOUND",
+        message: "No YouTube channel was found for this Google account.",
+      });
+    }
+
+    const channelId = item.id;
+    const displayName = item.snippet.title?.trim() || "YouTube";
+    const handle = (item.snippet.customUrl ?? displayName)
+      .replace(/^@/, "")
+      .trim();
+    const subscriberCount = item.statistics.hiddenSubscriberCount
+      ? 0
+      : toInt(item.statistics.subscriberCount);
+    const videoCount = toInt(item.statistics.videoCount);
+    const totalViewCount = toInt(item.statistics.viewCount);
+    const profilePictureUrl =
+      item.snippet.thumbnails?.high?.url ??
+      item.snippet.thumbnails?.default?.url ??
+      null;
+    const biography = item.snippet.description?.trim() || null;
+
+    let topVideos: YoutubeProfile["topVideos"] = [];
+    let engagementRate = 0;
+    let avgViews = 0;
+    let avgLikes = 0;
+    let avgComments = 0;
+
+    try {
+      const search = await this.youtubeGet<YoutubeSearchResponse>(
+        `/search?part=snippet&channelId=${encodeURIComponent(channelId)}&order=date&maxResults=12&type=video`,
+        accessToken,
+      );
+      const videos = search.items ?? [];
+      const videoIds = videos.map((video) => video.id.videoId).filter(Boolean);
+      if (videoIds.length > 0) {
+        const stats = await this.youtubeGet<YoutubeVideosResponse>(
+          `/videos?part=statistics&id=${encodeURIComponent(videoIds.join(","))}`,
+          accessToken,
+        );
+        const statsMap = new Map(
+          (stats.items ?? []).map((video) => [video.id, video.statistics ?? {}]),
+        );
+        const enriched = videos.map((video) => {
+          const s = statsMap.get(video.id.videoId) ?? {};
+          return {
+            videoId: video.id.videoId,
+            title: video.snippet.title ?? "",
+            thumbnail:
+              video.snippet.thumbnails?.medium?.url ??
+              video.snippet.thumbnails?.default?.url ??
+              null,
+            publishedAt: video.snippet.publishedAt ?? null,
+            viewCount: toInt(s.viewCount),
+            likeCount: toInt(s.likeCount),
+            commentCount: toInt(s.commentCount),
+            permalink: `https://youtube.com/watch?v=${video.id.videoId}`,
+          };
+        });
+        const count = enriched.length;
+        const totalViews = enriched.reduce((sum, video) => sum + video.viewCount, 0);
+        const totalLikes = enriched.reduce((sum, video) => sum + video.likeCount, 0);
+        const totalComments = enriched.reduce(
+          (sum, video) => sum + video.commentCount,
+          0,
+        );
+        avgViews = count > 0 ? Math.round(totalViews / count) : 0;
+        avgLikes = count > 0 ? Math.round(totalLikes / count) : 0;
+        avgComments = count > 0 ? Math.round(totalComments / count) : 0;
+        engagementRate =
+          totalViews > 0
+            ? Math.round(((totalLikes + totalComments) / totalViews) * 10000) / 100
+            : 0;
+        topVideos = [...enriched]
+          .sort((a, b) => b.viewCount - a.viewCount)
+          .slice(0, 3);
+      }
+    } catch {
+      // Recent video metrics are optional; channel-level connection still succeeds.
+    }
+
+    return {
+      channelId,
+      handle,
+      displayName,
+      subscriberCount,
+      videoCount,
+      totalViewCount,
+      profilePictureUrl,
+      biography,
+      engagementRate,
+      avgViews,
+      avgLikes,
+      avgComments,
+      topVideos,
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  private async youtubeGet<T extends { error?: { message?: string } }>(
+    path: string,
+    accessToken: string,
+  ): Promise<T> {
+    const res = await fetch(`${YOUTUBE_DATA_API}${path}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(20_000),
+    });
+    const data = (await res.json().catch(() => ({}))) as T;
+    if (!res.ok || data.error) {
+      throw new BadGatewayException({
+        code: "YOUTUBE_API_FAILED",
+        message: data.error?.message ?? "YouTube API request failed.",
+      });
+    }
+    return data;
+  }
+
+  private toSocialStats(profile: YoutubeProfile) {
+    return {
+      platform: "youtube",
+      handle: profile.handle,
+      displayName: profile.displayName,
+      followersCount: profile.subscriberCount,
+      followingCount: 0,
+      postsCount: profile.videoCount,
+      profilePicUrl: profile.profilePictureUrl,
+      bio: profile.biography,
+      engagementRate: profile.engagementRate,
+      avgLikes: profile.avgLikes,
+      avgComments: profile.avgComments,
+      avgViews: profile.avgViews,
+      totalViewCount: profile.totalViewCount,
+      fetchedAt: profile.fetchedAt,
+      source: "youtube_official",
+      connectMethod: "youtube_oauth",
+    };
+  }
+
+  private toConnectionMetadata(profile: YoutubeProfile, scopes: string[]) {
+    return {
+      connectMethod: "youtube_oauth",
+      source: "youtube_official",
+      scopes,
+      displayName: profile.displayName,
+      profilePictureUrl: profile.profilePictureUrl,
+      biography: profile.biography,
+      avgViews: profile.avgViews,
+      avgLikes: profile.avgLikes,
+      avgComments: profile.avgComments,
+      topVideos: profile.topVideos,
+      lastSyncedAt: profile.fetchedAt,
+    };
+  }
+
+  private callbackHtml(deepLink: string, hasError: boolean): string {
+    const title = hasError ? "YouTube connection failed" : "YouTube authorized";
+    const body = hasError
+      ? "Return to Halchal and try connecting YouTube again."
+      : "Return to Halchal to finish saving your YouTube channel.";
+    return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="refresh" content="0;url=${escapeHtml(deepLink)}" />
+    <title>${escapeHtml(title)}</title>
+  </head>
+  <body style="font-family: system-ui, sans-serif; padding: 24px;">
+    <h1>${escapeHtml(title)}</h1>
+    <p>${escapeHtml(body)}</p>
+    <p><a href="${escapeHtml(deepLink)}">Open Halchal</a></p>
+    <script>window.location.href = ${JSON.stringify(deepLink)};</script>
+  </body>
+</html>`;
+  }
+
+  private requireConfig() {
+    if (!this.googleClientId || !this.googleClientSecret || !this.youtubeRedirectUri) {
+      throw new ConflictException({
+        code: "YOUTUBE_OAUTH_NOT_CONFIGURED",
+        message: "YouTube OAuth is not configured on the API.",
+      });
+    }
+  }
+
+  private encrypt(value: string): string {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", this.encryptionKey, iv);
+    const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
+  }
+
+  private get googleClientId(): string {
+    return this.config.get("GOOGLE_CLIENT_ID", { infer: true }) ?? "";
+  }
+
+  private get googleClientSecret(): string {
+    return this.config.get("GOOGLE_CLIENT_SECRET", { infer: true }) ?? "";
+  }
+
+  private get youtubeRedirectUri(): string {
+    return this.config.get("YOUTUBE_REDIRECT_URI", { infer: true }) ?? "";
+  }
+
+  private get youtubeScopes(): string {
+    return this.config.get("YOUTUBE_OAUTH_SCOPES", { infer: true });
+  }
+
+  private get encryptionKey(): Buffer {
+    return createHash("sha256")
+      .update(
+        this.config.get("YOUTUBE_TOKEN_ENCRYPTION_KEY", { infer: true }) ??
+          this.config.get("JWT_SECRET", { infer: true }),
+      )
+      .digest();
+  }
+}

@@ -10,9 +10,11 @@ import {
   CampaignStatus,
   CampaignWizardStep,
   Prisma,
+  StaffAccessLevel,
   UserRole,
 } from "@prisma/client";
 
+import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
@@ -29,7 +31,33 @@ export class CampaignsService {
     private readonly prisma: PrismaService,
     private readonly campaignAccess: CampaignAccessService,
     private readonly realtime: RealtimeService,
+    private readonly activityLog: ActivityLogService,
   ) {}
+
+  private async fetchBudgetUsedMap(campaignIds: string[]): Promise<Record<string, number>> {
+    if (!campaignIds.length) return {};
+    // Use COALESCE(paid_amount_paise, estimated) so paid takes priority once processed;
+    // fall back to view-count-derived estimate for campaigns with no payouts yet.
+    const rows = await this.prisma.$queryRaw<{ campaign_id: string; total: bigint }[]>`
+      SELECT
+        cp.campaign_id,
+        COALESCE(SUM(
+          COALESCE(
+            fd.paid_amount_paise,
+            LEAST(
+              FLOOR(fd.view_count::numeric * c.rate_per_1k_paise::numeric / 1000),
+              c.max_payout_paise::numeric
+            )
+          )
+        ), 0) AS total
+      FROM campaign_participations cp
+      JOIN format_deliverables fd ON fd.participation_id = cp.id
+      JOIN campaigns c ON c.id = cp.campaign_id
+      WHERE cp.campaign_id = ANY(${campaignIds}::text[])
+      GROUP BY cp.campaign_id
+    `;
+    return Object.fromEntries(rows.map((r) => [r.campaign_id, Number(r.total)]));
+  }
 
   async listLiveForCreators() {
     const campaigns = await this.prisma.campaign.findMany({
@@ -39,7 +67,10 @@ export class CampaignsService {
         brandProfile: { select: { companyName: true, logoUrl: true } },
       },
     });
-    return campaigns.map((c) => this.formatCampaignForCreator(c));
+    const budgetMap = await this.fetchBudgetUsedMap(campaigns.map((c) => c.id));
+    return campaigns.map((c) =>
+      this.formatCampaignForCreator({ ...c, budgetUsedPaise: budgetMap[c.id] ?? c.budgetUsedPaise }),
+    );
   }
 
   async getLiveForCreator(campaignId: string) {
@@ -55,7 +86,11 @@ export class CampaignsService {
         message: "Campaign not found",
       });
     }
-    return this.formatCampaignForCreator(campaign);
+    const budgetMap = await this.fetchBudgetUsedMap([campaign.id]);
+    return this.formatCampaignForCreator({
+      ...campaign,
+      budgetUsedPaise: budgetMap[campaign.id] ?? campaign.budgetUsedPaise,
+    });
   }
 
   async listForUser(
@@ -63,10 +98,18 @@ export class CampaignsService {
     role: UserRole,
     query: ListCampaignsQueryDto,
   ) {
-    const brandProfileId =
-      role === UserRole.brand
-        ? await this.campaignAccess.getBrandProfileIdForUser(userId)
-        : null;
+    let brandProfileId: string | null = null;
+    let staffBrandIds: string[] | null = null;
+
+    if (role === UserRole.brand) {
+      brandProfileId = await this.campaignAccess.getBrandProfileIdForUser(userId);
+    } else if (role === UserRole.staff) {
+      const assignments = await this.prisma.staffBrandAssignment.findMany({
+        where: { staffUserId: userId },
+        select: { brandProfileId: true },
+      });
+      staffBrandIds = assignments.map((a) => a.brandProfileId);
+    }
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 6;
@@ -74,9 +117,9 @@ export class CampaignsService {
 
     const where: Prisma.CampaignWhereInput = {
       ...(query.status ? { status: query.status } : {}),
-      ...(role === UserRole.brand && brandProfileId
-        ? { brandProfileId }
-        : {}),
+      ...(query.search?.trim() ? { title: { contains: query.search.trim(), mode: "insensitive" } } : {}),
+      ...(role === UserRole.brand && brandProfileId ? { brandProfileId } : {}),
+      ...(role === UserRole.staff && staffBrandIds ? { brandProfileId: { in: staffBrandIds } } : {}),
     };
 
     const [total, campaigns] = await this.prisma.$transaction([
@@ -98,9 +141,10 @@ export class CampaignsService {
       }),
     ]);
 
+    const budgetMap = await this.fetchBudgetUsedMap(campaigns.map((c) => c.id));
     return {
       items: campaigns.map((c) => ({
-        ...this.formatCampaign(c),
+        ...this.formatCampaign({ ...c, budgetUsedPaise: budgetMap[c.id] ?? c.budgetUsedPaise }),
         brandCompanyName: c.brandProfile?.companyName ?? null,
         submissionCount: c._count.submissions,
         pendingInviteEmail: c.invites[0]?.email ?? null,
@@ -133,8 +177,9 @@ export class CampaignsService {
 
     await this.campaignAccess.assertCanAccessCampaign(userId, role, campaign);
 
+    const budgetMap = await this.fetchBudgetUsedMap([campaign.id]);
     return {
-      ...this.formatCampaign(campaign),
+      ...this.formatCampaign({ ...campaign, budgetUsedPaise: budgetMap[campaign.id] ?? campaign.budgetUsedPaise }),
       brandCompanyName: campaign.brandProfile?.companyName ?? null,
       submissionCount: campaign._count.submissions,
       pendingInviteEmail: campaign.invites[0]?.email ?? null,
@@ -150,7 +195,23 @@ export class CampaignsService {
 
     if (role === UserRole.admin) {
       ownership = CampaignOwnership.admin_created;
-      brandProfileId = null;
+      brandProfileId = dto.brandProfileId ?? null;
+    } else if (role === UserRole.staff) {
+      brandProfileId = dto.brandProfileId ?? null;
+      if (brandProfileId) {
+        const assignment = await this.prisma.staffBrandAssignment.findUnique({
+          where: { staffUserId_brandProfileId: { staffUserId: userId, brandProfileId } },
+        });
+        if (!assignment) {
+          throw new ForbiddenException({ code: "FORBIDDEN", message: "Not assigned to this brand" });
+        }
+        if (assignment.accessLevel !== StaffAccessLevel.full) {
+          throw new ForbiddenException({
+            code: "FORBIDDEN",
+            message: "View-only access — cannot create campaigns for this brand",
+          });
+        }
+      }
     } else {
       brandProfileId =
         await this.campaignAccess.resolveBrandProfileIdForBrandCreate(
@@ -192,6 +253,8 @@ export class CampaignsService {
         category: dto.category,
         platform: platforms[0] ?? DEFAULT_CAMPAIGN_PLATFORM,
         platforms,
+        locationType: dto.locationType ?? "pan_india",
+        targetStates: dto.locationType === "states" ? (dto.targetStates ?? []) : [],
         status,
         brief,
         briefHook: dto.briefHook,
@@ -209,6 +272,12 @@ export class CampaignsService {
     });
 
     const formatted = this.formatCampaign(campaign);
+    await this.activityLog.log(userId, "campaign.created", {
+      targetType: "Campaign",
+      targetId: campaign.id,
+      brandProfileId: brandProfileId ?? undefined,
+      metadata: { title: campaign.title },
+    });
     if (isLive) {
       this.realtime.emitCampaignPublished(formatted);
     } else {
@@ -237,6 +306,7 @@ export class CampaignsService {
       userId,
       role,
       existing,
+      { requireWrite: true },
     );
 
     const nextStatus = dto.status ?? existing.status;
@@ -276,6 +346,13 @@ export class CampaignsService {
       ? normalizeCampaignPlatforms(dto.platforms)
       : undefined;
 
+    const targetStates =
+      dto.locationType === "pan_india"
+        ? []
+        : dto.locationType === "states"
+          ? (dto.targetStates ?? existing.targetStates)
+          : undefined;
+
     const campaign = await this.prisma.campaign.update({
       where: { id: campaignId },
       data: {
@@ -292,6 +369,8 @@ export class CampaignsService {
         coverImageUrl: dto.coverImageUrl,
         platforms,
         platform: platforms?.[0],
+        locationType: dto.locationType,
+        targetStates,
         productUrl: dto.productUrl,
         ratePer1kPaise: dto.ratePer1kPaise,
         maxPayoutPaise: dto.maxPayoutPaise,
@@ -328,6 +407,7 @@ export class CampaignsService {
       userId,
       role,
       existing,
+      { requireWrite: true },
     );
 
     if (
@@ -351,20 +431,11 @@ export class CampaignsService {
     return { deleted: true, id: campaignId };
   }
 
-  private assertAdminCanPublish(campaign: {
+  private assertAdminCanPublish(_campaign: {
     ownership?: CampaignOwnership;
     brandProfileId: string | null;
     inviteAcceptedAt: Date | null;
   }): void {
-    if (campaign.ownership !== CampaignOwnership.admin_created) {
-      return;
-    }
-    if (!campaign.brandProfileId || !campaign.inviteAcceptedAt) {
-      throw new ForbiddenException({
-        code: "PUBLISH_BLOCKED_PENDING_INVITE",
-        message: "Invite a brand and wait for acceptance before publishing",
-      });
-    }
   }
 
   private assertStatusTransition(
@@ -416,6 +487,45 @@ export class CampaignsService {
     }
   }
 
+  /** Public, unauthenticated read-only view — excludes rate/budget/payout ("commercials"). */
+  async getPublicView(campaignId: string) {
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id: campaignId },
+      include: {
+        brandProfile: { select: { companyName: true, logoUrl: true } },
+      },
+    });
+
+    if (!campaign || campaign.status === CampaignStatus.draft) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Campaign not available",
+      });
+    }
+
+    return {
+      id: campaign.id,
+      title: campaign.title,
+      category: campaign.category,
+      platform: campaign.platform,
+      platforms: campaign.platforms,
+      locationType: campaign.locationType,
+      targetStates: campaign.targetStates,
+      status: campaign.status,
+      brief: campaign.brief,
+      briefHook: campaign.briefHook,
+      doRules: campaign.doRules,
+      avoidRules: campaign.avoidRules,
+      sourceAssets: campaign.sourceAssets,
+      referenceAssets: campaign.referenceAssets,
+      coverImageUrl: campaign.coverImageUrl,
+      productUrl: campaign.productUrl,
+      startDate: campaign.startDate?.toISOString() ?? null,
+      brandCompanyName: campaign.brandProfile?.companyName ?? null,
+      brandLogoUrl: campaign.brandProfile?.logoUrl ?? null,
+    };
+  }
+
   formatCampaignForCreator(
     c: Parameters<CampaignsService["formatCampaign"]>[0] & {
       brandProfile?: { companyName: string; logoUrl: string | null } | null;
@@ -439,6 +549,8 @@ export class CampaignsService {
     category: string | null;
     platform: string;
     platforms: string[];
+    locationType: string;
+    targetStates: string[];
     status: CampaignStatus;
     brief: string;
     briefHook: string | null;
@@ -456,10 +568,12 @@ export class CampaignsService {
     createdAt: Date;
     updatedAt?: Date;
   }) {
-    const poolPercent =
+    const rawPercent =
       c.budgetPaise > 0
-        ? Math.round((c.budgetUsedPaise / c.budgetPaise) * 100)
+        ? Math.min(100, (c.budgetUsedPaise / c.budgetPaise) * 100)
         : 0;
+    // Show at least 1% when any budget has been consumed so the bar is visibly non-empty.
+    const poolPercent = rawPercent === 0 ? 0 : Math.max(1, Math.round(rawPercent));
 
     return {
       id: c.id,
@@ -472,6 +586,8 @@ export class CampaignsService {
       category: c.category,
       platform: c.platform,
       platforms: c.platforms,
+      locationType: c.locationType,
+      targetStates: c.targetStates,
       status: c.status,
       brief: c.brief,
       briefHook: c.briefHook,

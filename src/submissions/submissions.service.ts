@@ -9,6 +9,7 @@ import { CampaignAccessService } from "../access/campaign-access.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
 import { ParticipationService } from "../participation/participation.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { WalletService } from "../wallet/wallet.service";
 import { ReviewAction, ReviewSubmissionDto } from "./dto/review-submission.dto";
 import type { CreateSubmissionDto } from "./dto/create-submission.dto";
 import type { SubmitLiveLinkDto } from "./dto/create-submission.dto";
@@ -24,6 +25,7 @@ export class SubmissionsService {
     private readonly campaignAccess: CampaignAccessService,
     private readonly campaigns: CampaignsService,
     private readonly participation: ParticipationService,
+    private readonly walletService: WalletService,
   ) {}
 
   private async resolveBrandProfileIds(
@@ -32,6 +34,13 @@ export class SubmissionsService {
   ): Promise<string[] | null> {
     if (role === UserRole.admin) {
       return null;
+    }
+    if (role === UserRole.staff) {
+      const assignments = await this.prisma.staffBrandAssignment.findMany({
+        where: { staffUserId: userId },
+        select: { brandProfileId: true },
+      });
+      return assignments.map((a) => a.brandProfileId);
     }
     const brandProfileId =
       await this.campaignAccess.getBrandProfileIdForUser(userId);
@@ -76,6 +85,7 @@ export class SubmissionsService {
       mediaType: s.mediaType,
       campaignId: s.campaign.id,
       campaignTitle: s.campaign.title,
+      creatorId: s.creator.id,
       creatorName: s.creator.displayName ?? s.creator.username ?? "Creator",
       eligibleViews: s.eligibleViews,
       estimatedPaise: s.estimatedPaise,
@@ -158,6 +168,7 @@ export class SubmissionsService {
       userId,
       role,
       submission.campaign,
+      { requireWrite: true },
     );
 
     if (
@@ -344,10 +355,11 @@ export class SubmissionsService {
     };
   }
 
-  async creatorDashboard(userId: string) {
-    const [wallet, reviewCount, trending] = await Promise.all([
+  async creatorDashboard(userId: string, creatorProfileId?: string) {
+    const [wallet, pendingPaise, reviewCount, trending, user] = await Promise.all([
       this.prisma.wallet.findUnique({ where: { userId } }),
-      this.participation.countUnderReviewForCreator(userId),
+      this.walletService.computePendingPaise(userId, creatorProfileId),
+      this.participation.countUnderReviewForCreator(userId, creatorProfileId),
       this.prisma.campaign.findMany({
         where: { status: CampaignStatus.live },
         orderBy: { createdAt: "desc" },
@@ -356,18 +368,22 @@ export class SubmissionsService {
           brandProfile: { select: { companyName: true, logoUrl: true } },
         },
       }),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { socialLinks: true } }),
     ]);
+
+    const links = (user?.socialLinks as Record<string, string> | null) ?? {};
 
     return {
       wallet: {
         availablePaise: wallet?.availablePaise ?? 0,
-        pendingPaise: wallet?.pendingPaise ?? 0,
+        pendingPaise,
         lifetimePaise: wallet?.lifetimePaise ?? 0,
       },
       clipsUnderReview: reviewCount,
       socialLinks: {
-        instagram: false,
-        youtube: false,
+        instagram: Boolean(links.instagram?.trim()),
+        youtube: Boolean(links.youtube?.trim()),
+        twitter: Boolean(links.twitter?.trim()),
       },
       trending: trending.map((c) => this.campaigns.formatCampaignForCreator(c)),
     };
@@ -445,6 +461,118 @@ export class SubmissionsService {
       pendingReviews,
       budgetUsedPaise: budgetAgg._sum.budgetUsedPaise ?? 0,
       totalViews: viewsAgg._sum.eligibleViews ?? 0,
+    };
+  }
+
+  /** Cross-campaign analytics overview — totals, per-campaign comparison, top creators. */
+  async getAnalyticsOverview(userId: string, role: UserRole) {
+    const brandProfileIds = await this.resolveBrandProfileIds(userId, role);
+    if (brandProfileIds && brandProfileIds.length === 0) {
+      return {
+        totals: { totalViews: 0, totalLikes: 0, totalComments: 0, totalShares: 0, totalEarningsPaise: 0, totalCampaigns: 0, totalClippers: 0 },
+        campaigns: [],
+        topCreators: [],
+      };
+    }
+
+    const brandFilter = brandProfileIds ? { brandProfileId: { in: brandProfileIds } } : {};
+
+    const deliverables = await this.prisma.formatDeliverable.findMany({
+      where: { participation: { campaign: brandFilter } },
+      include: {
+        participation: {
+          include: {
+            campaign: { select: { id: true, title: true, status: true, ratePer1kPaise: true, maxPayoutPaise: true, coverImageUrl: true } },
+            creator: { select: { id: true, displayName: true, username: true, avatarUrl: true } },
+          },
+        },
+      },
+    });
+
+    type CampaignAgg = { id: string; title: string; status: string; coverImageUrl: string | null; totalViews: number; totalEarningsPaise: number; clipperIds: Set<string> };
+    type CreatorAgg = { creatorId: string; creatorName: string; avatarUrl: string | null; totalViews: number; totalLikes: number; totalComments: number; totalShares: number; totalEarningsPaise: number };
+
+    const campaignMap = new Map<string, CampaignAgg>();
+    const creatorMap = new Map<string, CreatorAgg>();
+    const allClipperIds = new Set<string>();
+    let totalViews = 0;
+    let totalLikes = 0;
+    let totalComments = 0;
+    let totalShares = 0;
+    let totalEarningsPaise = 0;
+
+    for (const d of deliverables) {
+      const campaign = d.participation.campaign;
+      const creator = d.participation.creator;
+      const estimatedPaise = campaign.ratePer1kPaise > 0
+        ? Math.min(Math.floor((d.viewCount / 1000) * campaign.ratePer1kPaise), campaign.maxPayoutPaise)
+        : 0;
+
+      totalViews += d.viewCount;
+      totalLikes += d.likeCount;
+      totalComments += d.commentCount;
+      totalShares += d.shareCount;
+      totalEarningsPaise += estimatedPaise;
+      allClipperIds.add(d.participationId);
+
+      let campaignEntry = campaignMap.get(campaign.id);
+      if (!campaignEntry) {
+        campaignEntry = { id: campaign.id, title: campaign.title, status: campaign.status, coverImageUrl: campaign.coverImageUrl, totalViews: 0, totalEarningsPaise: 0, clipperIds: new Set() };
+        campaignMap.set(campaign.id, campaignEntry);
+      }
+      campaignEntry.totalViews += d.viewCount;
+      campaignEntry.totalEarningsPaise += estimatedPaise;
+      campaignEntry.clipperIds.add(d.participationId);
+
+      let creatorEntry = creatorMap.get(creator.id);
+      if (!creatorEntry) {
+        creatorEntry = {
+          creatorId: creator.id,
+          creatorName: creator.displayName ?? creator.username ?? "Creator",
+          avatarUrl: creator.avatarUrl,
+          totalViews: 0,
+          totalLikes: 0,
+          totalComments: 0,
+          totalShares: 0,
+          totalEarningsPaise: 0,
+        };
+        creatorMap.set(creator.id, creatorEntry);
+      }
+      creatorEntry.totalViews += d.viewCount;
+      creatorEntry.totalLikes += d.likeCount;
+      creatorEntry.totalComments += d.commentCount;
+      creatorEntry.totalShares += d.shareCount;
+      creatorEntry.totalEarningsPaise += estimatedPaise;
+    }
+
+    const campaigns = Array.from(campaignMap.values())
+      .map((c) => ({
+        id: c.id,
+        title: c.title,
+        status: c.status,
+        coverImageUrl: c.coverImageUrl,
+        totalViews: c.totalViews,
+        totalEarningsPaise: c.totalEarningsPaise,
+        clipperCount: c.clipperIds.size,
+      }))
+      .sort((a, b) => b.totalViews - a.totalViews);
+
+    const topCreators = Array.from(creatorMap.values())
+      .sort((a, b) => b.totalViews - a.totalViews)
+      .slice(0, 20);
+
+    return {
+      totals: {
+        totalViews,
+        totalLikes,
+        totalComments,
+        totalShares,
+        totalEarningsPaise,
+        totalCampaigns: campaignMap.size,
+        totalClippers: allClipperIds.size,
+      },
+      campaigns,
+      topCreators,
     };
   }
 }

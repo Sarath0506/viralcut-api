@@ -24,6 +24,8 @@ enum UserRole {
 
   admin
 
+  staff
+
 }
 
 
@@ -128,6 +130,12 @@ enum FormatDeliverableStatus {
 
   live_submitted
 
+  proof_under_review
+
+  proof_approved
+
+  proof_rejected
+
 }
 
 
@@ -158,6 +166,24 @@ enum WithdrawalStatus {
 
 }
 
+enum StaffAccessLevel {
+
+  view_only
+
+  full
+
+}
+
+enum TaskStatus {
+
+  todo
+
+  in_progress
+
+  done
+
+}
+
 
 
 model User {
@@ -174,13 +200,33 @@ model User {
 
   displayName  String?   @map("display_name")
 
+  avatarUrl    String?   @map("avatar_url")
+
+  bio          String?   @db.Text
+
+  socialLinks  Json?     @map("social_links")
+
+  socialStats  Json?     @map("social_stats")
+
   username     String?   @unique
 
   fixedOtpCode String?   @map("fixed_otp_code") @db.VarChar(6)
 
   kycStatus        KycStatus @default(not_started) @map("kyc_status")
 
+  isActive         Boolean   @default(true) @map("is_active")
+
   termsAcceptedAt  DateTime? @map("terms_accepted_at")
+
+  kycDocumentUrl   String?   @map("kyc_document_url")
+
+  kycDocumentType  String?   @map("kyc_document_type")
+
+  kycSubmittedAt   DateTime? @map("kyc_submitted_at")
+
+  kycReviewedAt    DateTime? @map("kyc_reviewed_at")
+
+  kycRejectionReason String? @map("kyc_rejection_reason")
 
   createdAt        DateTime  @default(now()) @map("created_at")
 
@@ -196,6 +242,8 @@ model User {
 
   campaignParticipations    CampaignParticipation[]
 
+  creatorProfiles           CreatorProfile[]
+
   deliverablesReviewed      FormatDeliverable[]     @relation("DeliverableReviewedBy")
 
   deliverableRejections     DeliverableRejectionEvent[] @relation("RejectionReviewedBy")
@@ -203,6 +251,8 @@ model User {
   payoutMethods             PayoutMethod[]
 
   withdrawals               Withdrawal[]
+
+  staffBrandAssignments     StaffBrandAssignment[] @relation("StaffAssignments")
 
   refreshTokens             RefreshToken[]
 
@@ -213,6 +263,22 @@ model User {
   campaignInvitesSent       CampaignInvite[]   @relation("CampaignInviteInviter")
 
   campaignInvitesAccepted   CampaignInvite[]   @relation("CampaignInviteAcceptor")
+
+  tasksAssigned             Task[]             @relation("TaskAssignee")
+
+  tasksCreated              Task[]             @relation("TaskCreatedBy")
+
+  activityLogs              ActivityLog[]      @relation("ActivityActor")
+
+  notifications             Notification[]     @relation("NotificationRecipient")
+
+  deviceTokens              DeviceToken[]
+
+  instagramOAuthTransactions InstagramOAuthTransaction[]
+
+  instagramConnections       InstagramConnection[]
+
+  youtubeConnections         YoutubeConnection[]
 
 
 
@@ -310,7 +376,15 @@ model BrandProfile {
 
   companyName String   @map("company_name")
 
+  companyEmail String?  @map("company_email")
+
   logoUrl     String?  @map("logo_url")
+
+  pocName     String?  @map("poc_name")
+
+  pocPhone    String?  @map("poc_phone")
+
+  pocEmail    String?  @map("poc_email")
 
   createdAt   DateTime @default(now()) @map("created_at")
 
@@ -324,11 +398,163 @@ model BrandProfile {
 
 
 
+  staffAssignments StaffBrandAssignment[]
+
+  tasks Task[]
+
+  activityLogs ActivityLog[]
+
   @@map("brand_profiles")
 
 }
 
+model StaffBrandAssignment {
 
+  id            String   @id @default(cuid())
+
+  staffUserId   String   @map("staff_user_id")
+
+  brandProfileId String  @map("brand_profile_id")
+
+  accessLevel   StaffAccessLevel @default(full) @map("access_level")
+
+  assignedAt    DateTime @default(now()) @map("assigned_at")
+
+  staffUser     User         @relation("StaffAssignments", fields: [staffUserId], references: [id], onDelete: Cascade)
+
+  brandProfile  BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([staffUserId, brandProfileId])
+
+  @@index([staffUserId])
+
+  @@index([brandProfileId])
+
+  @@map("staff_brand_assignments")
+
+}
+
+model Task {
+
+  id              String     @id @default(cuid())
+
+  title           String
+
+  description     String?    @db.Text
+
+  assignedToUserId String    @map("assigned_to_user_id")
+
+  createdByUserId String     @map("created_by_user_id")
+
+  brandProfileId  String?    @map("brand_profile_id")
+
+  dueDate         DateTime?  @map("due_date")
+
+  status          TaskStatus @default(todo)
+
+  createdAt       DateTime   @default(now()) @map("created_at")
+
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+
+  assignedTo   User          @relation("TaskAssignee", fields: [assignedToUserId], references: [id], onDelete: Cascade)
+
+  createdBy    User          @relation("TaskCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  brandProfile BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+
+  @@index([assignedToUserId])
+
+  @@index([status])
+
+  @@map("tasks")
+
+}
+
+model ActivityLog {
+
+  id             String   @id @default(cuid())
+
+  actorUserId    String   @map("actor_user_id")
+
+  action         String
+
+  targetType     String   @map("target_type")
+
+  targetId       String   @map("target_id")
+
+  brandProfileId String?  @map("brand_profile_id")
+
+  metadata       Json?
+
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  actor        User          @relation("ActivityActor", fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  brandProfile BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+
+  @@index([brandProfileId])
+
+  @@index([createdAt])
+
+  @@map("activity_logs")
+
+}
+
+model Notification {
+
+  id              String    @id @default(cuid())
+
+  recipientUserId String    @map("recipient_user_id")
+
+  type            String
+
+  title           String
+
+  body            String?   @db.Text
+
+  link            String?
+
+  read            Boolean   @default(false)
+
+  readAt          DateTime? @map("read_at")
+
+  metadata        Json?
+
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  recipient User @relation("NotificationRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([recipientUserId, read])
+
+  @@index([createdAt])
+
+  @@map("notifications")
+
+}
+
+model DeviceToken {
+
+  id        String   @id @default(cuid())
+
+  userId    String   @map("user_id")
+
+  token     String   @unique
+
+  platform  String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+
+  @@map("device_tokens")
+
+}
 
 model Campaign {
 
@@ -351,6 +577,10 @@ model Campaign {
   platform         String              @default("instagram_reel")
 
   platforms        String[]            @default([])
+
+  locationType     String              @default("pan_india") @map("location_type")
+
+  targetStates     String[]            @default([]) @map("target_states")
 
   status           CampaignStatus      @default(draft)
 
@@ -512,6 +742,8 @@ model CampaignParticipation {
 
   creatorId         String   @map("creator_id")
 
+  creatorProfileId  String   @map("creator_profile_id")
+
   platformsSnapshot String[] @map("platforms_snapshot")
 
   joinedAt          DateTime @default(now()) @map("joined_at")
@@ -520,19 +752,231 @@ model CampaignParticipation {
 
 
 
-  campaign     Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign       Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
-  creator      User                @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  creator        User                @relation(fields: [creatorId], references: [id], onDelete: Cascade)
 
-  deliverables FormatDeliverable[]
+  creatorProfile CreatorProfile      @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+  deliverables   FormatDeliverable[]
 
 
 
-  @@unique([campaignId, creatorId])
+  @@unique([campaignId, creatorProfileId])
 
   @@index([creatorId])
 
+  @@index([creatorProfileId])
+
   @@map("campaign_participations")
+
+}
+
+
+
+model CreatorProfile {
+
+  id        String   @id @default(cuid())
+
+  userId    String   @map("user_id")
+
+  platform  String
+
+  handle    String
+
+  label     String?
+
+  avatarUrl String?  @map("avatar_url")
+
+  isDefault   Boolean  @default(false) @map("is_default")
+
+  socialLinks Json?    @default("{}") @map("social_links")
+
+  socialStats Json?    @default("{}") @map("social_stats")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+
+
+  user           User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  participations CampaignParticipation[]
+
+  instagramOAuthTransactions InstagramOAuthTransaction[]
+
+  instagramConnections InstagramConnection[]
+
+  youtubeConnections YoutubeConnection[]
+
+
+
+  @@unique([userId, platform, handle])
+
+  @@index([userId])
+
+  @@map("creator_profiles")
+
+}
+
+
+
+model InstagramOAuthTransaction {
+
+  id                   String    @id @default(cuid())
+
+  transactionId        String    @unique @map("transaction_id")
+
+  stateHash            String    @unique @map("state_hash")
+
+  userId               String    @map("user_id")
+
+  creatorProfileId     String    @map("creator_profile_id")
+
+  status               String    @default("started")
+
+  encryptedAccessToken String?   @map("encrypted_access_token") @db.Text
+
+  tokenExpiresAt       DateTime? @map("token_expires_at")
+
+  dataAccessExpiresAt  DateTime? @map("data_access_expires_at")
+
+  errorCode            String?   @map("error_code")
+
+  expiresAt            DateTime  @map("expires_at")
+
+  completedAt          DateTime? @map("completed_at")
+
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorProfile CreatorProfile @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@index([creatorProfileId])
+
+  @@index([expiresAt])
+
+  @@map("instagram_oauth_transactions")
+
+}
+
+
+
+model InstagramConnection {
+
+  id                   String    @id @default(cuid())
+
+  userId               String    @map("user_id")
+
+  creatorProfileId     String    @unique @map("creator_profile_id")
+
+  platformUserId       String    @map("platform_user_id")
+
+  platformHandle       String    @map("platform_handle")
+
+  encryptedAccessToken String    @map("encrypted_access_token") @db.Text
+
+  tokenExpiresAt       DateTime? @map("token_expires_at")
+
+  dataAccessExpiresAt  DateTime? @map("data_access_expires_at")
+
+  followerCount        Int       @default(0) @map("follower_count")
+
+  followsCount         Int       @default(0) @map("follows_count")
+
+  mediaCount           Int       @default(0) @map("media_count")
+
+  engagementRate       Float     @default(0) @map("engagement_rate")
+
+  profilePictureUrl    String?   @map("profile_picture_url")
+
+  metadata             Json      @default("{}")
+
+  isConnected          Boolean   @default(true) @map("is_connected")
+
+  lastSyncedAt         DateTime  @default(now()) @map("last_synced_at")
+
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorProfile CreatorProfile @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@index([platformUserId])
+
+  @@map("instagram_connections")
+
+}
+
+
+
+model YoutubeConnection {
+
+  id                    String    @id @default(cuid())
+
+  userId                String    @map("user_id")
+
+  creatorProfileId      String    @unique @map("creator_profile_id")
+
+  platformUserId        String    @map("platform_user_id")
+
+  platformHandle        String    @map("platform_handle")
+
+  encryptedAccessToken  String    @map("encrypted_access_token") @db.Text
+
+  encryptedRefreshToken String?   @map("encrypted_refresh_token") @db.Text
+
+  tokenExpiresAt        DateTime? @map("token_expires_at")
+
+  subscriberCount       Int       @default(0) @map("subscriber_count")
+
+  videoCount            Int       @default(0) @map("video_count")
+
+  totalViewCount        Int       @default(0) @map("total_view_count")
+
+  engagementRate        Float     @default(0) @map("engagement_rate")
+
+  profilePictureUrl     String?   @map("profile_picture_url")
+
+  metadata              Json      @default("{}")
+
+  isConnected           Boolean   @default(true) @map("is_connected")
+
+  lastSyncedAt          DateTime  @default(now()) @map("last_synced_at")
+
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorProfile CreatorProfile @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@index([platformUserId])
+
+  @@map("youtube_connections")
 
 }
 
@@ -560,7 +1004,23 @@ model FormatDeliverable {
 
   liveSubmittedAt    DateTime?               @map("live_submitted_at")
 
+  viewCount          Int                     @default(0) @map("view_count")
+
+  reach              Int                     @default(0)
+
+  likeCount          Int                     @default(0) @map("like_count")
+
+  commentCount       Int                     @default(0) @map("comment_count")
+
+  shareCount         Int                     @default(0) @map("share_count")
+
+  proofReviewedAt    DateTime?               @map("proof_reviewed_at")
+
   reviewedByUserId   String?                 @map("reviewed_by_user_id")
+
+  paidAt             DateTime?               @map("paid_at")
+
+  paidAmountPaise    Int?                    @map("paid_amount_paise")
 
   updatedAt          DateTime                @updatedAt @map("updated_at")
 
@@ -676,19 +1136,27 @@ model Transaction {
 
 model PayoutMethod {
 
-  id            String   @id @default(cuid())
+  id                String   @id @default(cuid())
 
-  userId        String   @map("user_id")
+  userId            String   @map("user_id")
 
-  type          String
+  type              String
 
-  label         String
+  label             String
 
-  accountMasked String   @map("account_masked")
+  accountHolderName String   @map("account_holder_name")
 
-  isDefault     Boolean  @default(false) @map("is_default")
+  accountNumber     String   @map("account_number")
 
-  createdAt     DateTime @default(now()) @map("created_at")
+  ifscCode          String?  @map("ifsc_code")
+
+  bankName          String?  @map("bank_name")
+
+  accountMasked     String   @map("account_masked")
+
+  isDefault         Boolean  @default(false) @map("is_default")
+
+  createdAt         DateTime @default(now()) @map("created_at")
 
 
 

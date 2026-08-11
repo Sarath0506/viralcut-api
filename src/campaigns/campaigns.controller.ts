@@ -37,7 +37,7 @@ import { ListCampaignsQueryDto } from "./dto/list-campaigns-query.dto";
 @ApiTags("campaigns")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.brand, UserRole.admin)
+@Roles(UserRole.brand, UserRole.admin, UserRole.staff)
 @Controller("campaigns")
 export class CampaignsController {
   constructor(
@@ -50,7 +50,7 @@ export class CampaignsController {
   @UseInterceptors(
     FileInterceptor("file", {
       storage: memoryStorage(),
-      limits: { fileSize: 3 * 1024 * 1024 },
+      limits: { fileSize: 50 * 1024 * 1024 },
       fileFilter: imageOnlyFileFilter,
     }),
   )
@@ -71,7 +71,7 @@ export class CampaignsController {
   @UseInterceptors(
     FileInterceptor("file", {
       storage: memoryStorage(),
-      limits: { fileSize: 25 * 1024 * 1024 },
+      limits: { fileSize: 50 * 1024 * 1024 },
       fileFilter: imageOrVideoFileFilter,
     }),
   )

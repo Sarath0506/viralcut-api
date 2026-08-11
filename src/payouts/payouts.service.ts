@@ -14,14 +14,16 @@ function computeWithdrawalFeePaise(
 }
 
 import type { Env } from "../config/env";
+import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
-import type { CreatePayoutMethodDto, CreateWithdrawalDto } from "./dto/payout.dto";
+import type { CreatePayoutMethodDto, CreateWithdrawalDto, UpdatePayoutMethodDto } from "./dto/payout.dto";
 
 @Injectable()
 export class PayoutsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
+    private readonly notifications: InAppNotificationService,
   ) {}
 
   maskAccount(account: string): string {
@@ -41,7 +43,10 @@ export class PayoutsService {
       id: m.id,
       type: m.type,
       label: m.label,
+      accountHolderName: m.accountHolderName,
       accountMasked: m.accountMasked,
+      ifscCode: m.ifscCode,
+      bankName: m.bankName,
       isDefault: m.isDefault,
     }));
   }
@@ -55,6 +60,10 @@ export class PayoutsService {
         userId,
         type: dto.type,
         label: dto.label,
+        accountHolderName: dto.accountHolderName,
+        accountNumber: dto.account,
+        ifscCode: dto.type === "bank" ? dto.ifscCode : null,
+        bankName: dto.bankName ?? null,
         accountMasked: this.maskAccount(dto.account),
         isDefault,
       },
@@ -64,8 +73,39 @@ export class PayoutsService {
       id: method.id,
       type: method.type,
       label: method.label,
+      accountHolderName: method.accountHolderName,
       accountMasked: method.accountMasked,
+      ifscCode: method.ifscCode,
+      bankName: method.bankName,
       isDefault: method.isDefault,
+    };
+  }
+
+  async updatePayoutMethod(userId: string, methodId: string, dto: UpdatePayoutMethodDto) {
+    const method = await this.prisma.payoutMethod.findFirst({
+      where: { id: methodId, userId },
+    });
+    if (!method) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Payout method not found" });
+    }
+    const updated = await this.prisma.payoutMethod.update({
+      where: { id: methodId },
+      data: {
+        ...(dto.accountHolderName !== undefined && { accountHolderName: dto.accountHolderName }),
+        ...(dto.ifscCode !== undefined && { ifscCode: dto.ifscCode }),
+        ...(dto.bankName !== undefined && { bankName: dto.bankName }),
+        ...(dto.label !== undefined && { label: dto.label }),
+      },
+    });
+    return {
+      id: updated.id,
+      type: updated.type,
+      label: updated.label,
+      accountHolderName: updated.accountHolderName,
+      accountMasked: updated.accountMasked,
+      ifscCode: updated.ifscCode,
+      bankName: updated.bankName,
+      isDefault: updated.isDefault,
     };
   }
 
@@ -160,7 +200,7 @@ export class PayoutsService {
       });
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const completed = await this.prisma.$transaction(async (tx) => {
       const wallet = await tx.wallet.findUnique({ where: { userId } });
       if (!wallet || wallet.availablePaise < dto.amountPaise) {
         throw new BadRequestException({
@@ -198,16 +238,29 @@ export class PayoutsService {
         },
       });
 
-      const completed = await tx.withdrawal.update({
+      return tx.withdrawal.update({
         where: { id: withdrawal.id },
         data: {
           status: WithdrawalStatus.completed,
           processedAt: new Date(),
         },
       });
-
-      return this.formatWithdrawal(completed);
     });
+
+    await this.notifications.notifyAllAdmins({
+      type: "withdrawal.requested",
+      title: "Withdrawal requested",
+      body: `₹${(netPaise / 100).toFixed(2)} requested`,
+    });
+
+    await this.notifications.create(userId, "creator", {
+      type: "withdrawal_processed",
+      title: "Withdrawal processed",
+      body: `₹${(netPaise / 100).toFixed(2)} is on its way to your ${payoutMethod.label}.`,
+      link: "/wallet",
+    });
+
+    return this.formatWithdrawal(completed);
   }
 
   async listWithdrawals(userId: string, limit = 20) {

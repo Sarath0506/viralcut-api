@@ -18,6 +18,7 @@ import {
 } from "class-validator";
 
 import { CAMPAIGN_PLATFORM_IDS } from "../campaign-platforms";
+import { CAMPAIGN_LOCATION_TYPES, INDIA_STATES } from "../india-states";
 
 export class SourceAssetDto {
   @ApiProperty({ enum: ["drive", "youtube"] })
@@ -58,6 +59,11 @@ export class ReferenceAssetDto {
 }
 
 export class CreateCampaignDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  brandProfileId?: string;
+
   @ApiPropertyOptional({ enum: CampaignWizardStep })
   @IsOptional()
   @IsEnum(CampaignWizardStep)
@@ -86,13 +92,26 @@ export class CreateCampaignDto {
   @IsIn([...CAMPAIGN_PLATFORM_IDS, "instagram_reels"])
   platform?: string;
 
-  @ApiPropertyOptional({ type: [String] })
+  @ApiPropertyOptional({ type: [String], maxItems: 1, description: "Exactly one target platform" })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(5)
+  @ArrayMaxSize(1)
   @IsString({ each: true })
   @IsIn([...CAMPAIGN_PLATFORM_IDS, "instagram_reels"], { each: true })
   platforms?: string[];
+
+  @ApiPropertyOptional({ enum: CAMPAIGN_LOCATION_TYPES, default: "pan_india" })
+  @IsOptional()
+  @IsIn(CAMPAIGN_LOCATION_TYPES)
+  locationType?: "pan_india" | "states";
+
+  @ApiPropertyOptional({ type: [String], enum: INDIA_STATES, description: "Indian states/UTs to target when locationType is 'states'" })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(INDIA_STATES.length)
+  @IsString({ each: true })
+  @IsIn(INDIA_STATES, { each: true })
+  targetStates?: string[];
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -225,13 +244,26 @@ export class UpdateCampaignDto {
   @Type(() => ReferenceAssetDto)
   referenceAssets?: ReferenceAssetDto[];
 
-  @ApiPropertyOptional({ type: [String] })
+  @ApiPropertyOptional({ type: [String], maxItems: 1, description: "Exactly one target platform" })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(5)
+  @ArrayMaxSize(1)
   @IsString({ each: true })
   @IsIn([...CAMPAIGN_PLATFORM_IDS, "instagram_reels"], { each: true })
   platforms?: string[];
+
+  @ApiPropertyOptional({ enum: CAMPAIGN_LOCATION_TYPES })
+  @IsOptional()
+  @IsIn(CAMPAIGN_LOCATION_TYPES)
+  locationType?: "pan_india" | "states";
+
+  @ApiPropertyOptional({ type: [String], enum: INDIA_STATES, description: "Indian states/UTs to target when locationType is 'states'" })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(INDIA_STATES.length)
+  @IsString({ each: true })
+  @IsIn(INDIA_STATES, { each: true })
+  targetStates?: string[];
 
   @ApiPropertyOptional()
   @IsOptional()

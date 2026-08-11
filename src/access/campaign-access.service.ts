@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { CampaignOwnership, UserRole } from "@prisma/client";
+import { CampaignOwnership, StaffAccessLevel, UserRole } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 
@@ -27,6 +27,7 @@ export class CampaignAccessService {
       brandProfileId: string | null;
       ownership: CampaignOwnership;
     },
+    opts?: { requireWrite?: boolean },
   ): Promise<void> {
     if (role === UserRole.admin) {
       return;
@@ -34,10 +35,27 @@ export class CampaignAccessService {
 
     if (role === UserRole.brand) {
       const brandProfileId = await this.getBrandProfileIdForUser(userId);
-      if (
-        brandProfileId &&
-        campaign.brandProfileId === brandProfileId
-      ) {
+      if (brandProfileId && campaign.brandProfileId === brandProfileId) {
+        return;
+      }
+    }
+
+    if (role === UserRole.staff && campaign.brandProfileId) {
+      const assignment = await this.prisma.staffBrandAssignment.findUnique({
+        where: {
+          staffUserId_brandProfileId: {
+            staffUserId: userId,
+            brandProfileId: campaign.brandProfileId,
+          },
+        },
+      });
+      if (assignment) {
+        if (opts?.requireWrite && assignment.accessLevel !== StaffAccessLevel.full) {
+          throw new ForbiddenException({
+            code: "FORBIDDEN",
+            message: "View-only access — cannot make changes to this brand",
+          });
+        }
         return;
       }
     }

@@ -1,22 +1,217 @@
-import { Controller, Get, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Req,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from "@nestjs/swagger";
+import { IsIn, IsString } from "class-validator";
+import { memoryStorage } from "multer";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
+import { PushNotificationService } from "../notifications/push-notification.service";
+import { ObjectStorageService } from "../storage/object-storage.service";
 import { UsersService } from "./users.service";
 import { UserMeDto } from "./dto/user-me.dto";
+import { UpdateBrandProfileDto } from "./dto/update-brand-profile.dto";
+import { ChangePasswordDto, UpdateProfileDto } from "./dto/update-profile.dto";
+
+class RegisterDeviceTokenDto {
+  @IsString()
+  token!: string;
+
+  @IsIn(["ios", "android"])
+  platform!: "ios" | "android";
+}
+
+class UnregisterDeviceTokenDto {
+  @IsString()
+  token!: string;
+}
 
 @ApiTags("users")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller("users")
 export class UsersController {
-  constructor(private readonly users: UsersService) {}
+  constructor(
+    private readonly users: UsersService,
+    private readonly storage: ObjectStorageService,
+    private readonly push: PushNotificationService,
+  ) {}
 
   @Get("me")
   @ApiOkResponse({ type: UserMeDto })
   getMe(@CurrentUser() user: AuthJwtPayload) {
     return this.users.getMe(user.sub, user.role);
+  }
+
+  @Patch("me")
+  updateProfile(
+    @CurrentUser() user: AuthJwtPayload,
+    @Body() body: UpdateProfileDto,
+  ) {
+    return this.users.updateProfile(user.sub, body);
+  }
+
+  @Delete("me")
+  deleteMe(@CurrentUser() user: AuthJwtPayload) {
+    return this.users.deleteMe(user.sub);
+  }
+
+  @Delete("me/social-stats/:platform")
+  async disconnectSocial(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("platform") platform: string,
+  ) {
+    const allowed = ["instagram", "youtube", "twitter"] as const;
+    if (!allowed.includes(platform as never)) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    if (platform === "instagram" || platform === "youtube") {
+      throw new BadRequestException({
+        code: "OFFICIAL_OAUTH_REQUIRED",
+        message: `${platform} must be managed from creator profile official OAuth.`,
+      });
+    }
+    return this.users.disconnectSocial(user.sub, platform);
+  }
+
+  @Post("me/social-stats/:platform")
+  async fetchSocialStats(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("platform") platform: string,
+    @Body("handle") handle: string,
+  ) {
+    const allowed = ["instagram", "youtube", "twitter"] as const;
+    if (!allowed.includes(platform as never)) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    if (platform === "instagram" || platform === "youtube") {
+      throw new BadRequestException({
+        code: "OFFICIAL_OAUTH_REQUIRED",
+        message: `${platform} must be connected with official OAuth.`,
+      });
+    }
+    if (!handle?.trim()) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "handle is required" });
+    }
+    return this.users.fetchAndStoreSocialStats(
+      user.sub,
+      platform as "instagram" | "youtube" | "twitter",
+      handle.trim(),
+    );
+  }
+
+  @Post("me/change-password")
+  changePassword(
+    @CurrentUser() user: AuthJwtPayload,
+    @Body() body: ChangePasswordDto,
+  ) {
+    return this.users.changePassword(user.sub, body.currentPassword, body.newPassword);
+  }
+
+  @Patch("me/brand-profile")
+  updateBrandProfile(
+    @CurrentUser() user: AuthJwtPayload,
+    @Body() body: UpdateBrandProfileDto,
+  ) {
+    return this.users.updateBrandProfile(user.sub, body);
+  }
+
+  @Post("me/brand-logo")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
+  async uploadBrandLogo(
+    @Req() req: import("express").Request,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const result = await this.storage.saveUploadedFile("brand-logos", {
+      buffer: file.buffer,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    });
+    const url = result.url.startsWith("http")
+      ? result.url
+      : `${req.protocol}://${req.get("host")}${result.url}`;
+    return { url };
+  }
+
+  @Post("me/avatar")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
+  async uploadAvatar(
+    @CurrentUser() user: AuthJwtPayload,
+    @Req() req: import("express").Request,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const result = await this.storage.saveUploadedFile("avatars", {
+      buffer: file.buffer,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    });
+    const url = result.url.startsWith("http")
+      ? result.url
+      : `${req.protocol}://${req.get("host")}${result.url}`;
+    await this.users.updateProfile(user.sub, { avatarUrl: url });
+    return { url };
+  }
+
+  @Post("me/kyc")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  async submitKyc(
+    @CurrentUser() user: AuthJwtPayload,
+    @Req() req: import("express").Request,
+    @UploadedFile() file: Express.Multer.File,
+    @Body("documentType") documentType?: string,
+  ) {
+    const result = await this.storage.saveUploadedFile("kyc-documents", {
+      buffer: file.buffer,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    });
+    const url = result.url.startsWith("http")
+      ? result.url
+      : `${req.protocol}://${req.get("host")}${result.url}`;
+    return this.users.submitKyc(user.sub, url, documentType ?? "id_proof");
+  }
+
+  @Post("me/device-token")
+  async registerDeviceToken(
+    @CurrentUser() user: AuthJwtPayload,
+    @Body() body: RegisterDeviceTokenDto,
+  ) {
+    await this.push.registerToken(user.sub, body.token, body.platform);
+    return { registered: true };
+  }
+
+  @Delete("me/device-token")
+  async unregisterDeviceToken(@Body() body: UnregisterDeviceTokenDto) {
+    await this.push.unregisterToken(body.token);
+    return { unregistered: true };
   }
 }

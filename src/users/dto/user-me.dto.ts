@@ -17,6 +17,9 @@ export class UserMeDto {
   displayName!: string | null;
 
   @ApiProperty({ nullable: true })
+  avatarUrl!: string | null;
+
+  @ApiProperty({ nullable: true })
   username!: string | null;
 
   @ApiProperty()
@@ -24,4 +27,10 @@ export class UserMeDto {
 
   @ApiProperty({ nullable: true })
   companyName!: string | null;
+
+  @ApiProperty({ nullable: true })
+  bio!: string | null;
+
+  @ApiProperty({ nullable: true, type: "object", additionalProperties: { type: "string" } })
+  socialLinks!: Record<string, string> | null;
 }

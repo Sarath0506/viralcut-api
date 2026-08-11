@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { UserRole } from "@prisma/client";
 
@@ -8,6 +8,7 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { RolesGuard } from "../common/guards/roles.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { CampaignsService } from "../campaigns/campaigns.service";
+import { JoinCampaignDto } from "../participation/dto/join-campaign.dto";
 import { ParticipationService } from "../participation/participation.service";
 
 @ApiTags("creator")
@@ -32,15 +33,32 @@ export class CreatorCampaignsController {
   }
 
   @Post(":id/join")
-  join(@CurrentUser() user: AuthJwtPayload, @Param("id") id: string) {
-    return this.participation.joinCampaign(user.sub, id);
+  join(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Body() dto: JoinCampaignDto,
+  ) {
+    return this.participation.joinCampaign(user.sub, id, dto.creatorProfileId);
   }
 
   @Get(":id/participation")
   getParticipation(
     @CurrentUser() user: AuthJwtPayload,
     @Param("id") id: string,
+    @Query("creatorProfileId") creatorProfileId: string,
   ) {
-    return this.participation.getParticipationByCampaign(user.sub, id);
+    return this.participation.getParticipationByCampaign(
+      user.sub,
+      id,
+      creatorProfileId,
+    );
+  }
+
+  @Get(":id/leaderboard")
+  getLeaderboard(
+    @Param("id") id: string,
+    @Query("creatorProfileId") creatorProfileId?: string,
+  ) {
+    return this.participation.getLeaderboard(id, creatorProfileId);
   }
 }

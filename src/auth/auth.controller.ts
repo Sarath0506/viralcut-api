@@ -14,7 +14,8 @@ import {
   BrandResetPasswordDto,
   RefreshTokenDto,
 } from "./dto/brand-auth.dto";
-import { CreatorOtpRequestDto, CreatorOtpVerifyDto } from "./dto/creator-auth.dto";
+import { CreatorOtpRequestDto, CreatorOtpVerifyDto, SendOtpDto, VerifyOtpDto } from "./dto/creator-auth.dto";
+import { normalizePhone } from "./otp.service";
 import { AuthResponseDto } from "./dto/auth-response.dto";
 
 @ApiTags("auth")
@@ -79,6 +80,22 @@ export class AuthController {
   @ApiOkResponse({ type: AuthResponseDto })
   verifyCreatorOtp(@Body() dto: CreatorOtpVerifyDto) {
     return this.auth.verifyCreatorOtp(dto);
+  }
+
+  @Post("send-otp")
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  sendOtp(@Body() dto: SendOtpDto) {
+    return this.otp.requestOtp(dto.phone);
+  }
+
+  @Post("verify-otp")
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOkResponse({ type: AuthResponseDto })
+  verifyOtp(@Body() dto: VerifyOtpDto) {
+    return this.auth.verifyCreatorOtp({
+      ...dto,
+      phone: normalizePhone(dto.phone),
+    });
   }
 
   @Post("refresh")

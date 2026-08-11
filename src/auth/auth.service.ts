@@ -15,8 +15,9 @@ import { parseDurationMs } from "../common/parse-duration";
 import type { Env } from "../config/env";
 import { PrismaService } from "../prisma/prisma.service";
 import { EmailService } from "../notifications/email.service";
+import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import type { AuthJwtPayload, AuthTokens } from "./auth.types";
-import { hashRefreshToken, OtpService } from "./otp.service";
+import { hashRefreshToken, normalizePhone, OtpService } from "./otp.service";
 import type { AdminLoginDto } from "./dto/admin-auth.dto";
 import type { BrandLoginDto, BrandRegisterDto } from "./dto/brand-auth.dto";
 import type { CreatorOtpVerifyDto } from "./dto/creator-auth.dto";
@@ -29,6 +30,7 @@ export class AuthService {
     private readonly config: ConfigService<Env, true>,
     private readonly otp: OtpService,
     private readonly email: EmailService,
+    private readonly notifications: InAppNotificationService,
   ) {}
 
   async registerBrand(dto: BrandRegisterDto) {
@@ -49,7 +51,7 @@ export class AuthService {
       },
     });
 
-    await this.prisma.$transaction([
+    const [brandProfile] = await this.prisma.$transaction([
       this.prisma.brandProfile.create({
         data: {
           userId: user.id,
@@ -58,6 +60,13 @@ export class AuthService {
       }),
       this.prisma.wallet.create({ data: { userId: user.id } }),
     ]);
+
+    await this.notifications.notifyAllAdmins({
+      type: "brand.registered",
+      title: "New brand registered",
+      body: dto.companyName.trim(),
+      link: `/admin/brands/${brandProfile.id}`,
+    });
 
     return this.issueTokens(user);
   }
@@ -101,7 +110,11 @@ export class AuthService {
       });
     }
 
-    if (user.role !== UserRole.brand) {
+    if (user.role !== UserRole.brand && user.role !== UserRole.staff) {
+      throw invalidBrandCredentials();
+    }
+
+    if (user.role === UserRole.staff && !user.isActive) {
       throw invalidBrandCredentials();
     }
 
@@ -184,10 +197,11 @@ export class AuthService {
   }
 
   async verifyCreatorOtp(dto: CreatorOtpVerifyDto) {
-    await this.otp.verifyOtp(dto.phone, dto.code);
+    const phone = normalizePhone(dto.phone);
+    await this.otp.verifyOtp(phone, dto.code);
 
     let user = await this.prisma.user.findUnique({
-      where: { phone: dto.phone },
+      where: { phone },
       include: { wallet: true },
     });
 
@@ -204,12 +218,12 @@ export class AuthService {
           message: "Email is required to create an account.",
         });
       }
-      await this.assertCreatorSignupFieldsAvailable(dto);
+      await this.assertCreatorSignupFieldsAvailable({ ...dto, phone });
       try {
         user = await this.prisma.user.create({
           data: {
             role: UserRole.creator,
-            phone: dto.phone,
+            phone,
             displayName: dto.displayName,
             username: dto.username,
             email: dto.email?.toLowerCase(),

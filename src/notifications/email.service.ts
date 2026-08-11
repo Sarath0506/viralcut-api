@@ -45,7 +45,7 @@ export class EmailService {
     const ttlLabel = formatDurationLabel(
       this.config.get("PASSWORD_RESET_TTL", { infer: true }),
     );
-    const subject = "Reset your ViralCut brand password";
+    const subject = "Reset your Halchal brand password";
     const text = `Use this link to reset your password (valid ${ttlLabel}): ${resetUrl}`;
 
     await this.sendMail(email, subject, text, `password reset for ${email}\n  Link: ${resetUrl}`);
@@ -62,7 +62,7 @@ export class EmailService {
       this.config.get("BRAND_INVITE_TTL", { infer: true }),
     );
     const subject = `You're invited to collaborate on "${campaignTitle}"`;
-    const text = `You've been invited to collaborate on the ViralCut campaign "${campaignTitle}".\n\nAccept the invite (valid ${ttlLabel}): ${inviteUrl}`;
+    const text = `You've been invited to collaborate on the Halchal campaign "${campaignTitle}".\n\nAccept the invite (valid ${ttlLabel}): ${inviteUrl}`;
 
     await this.sendMail(
       email,
@@ -70,6 +70,15 @@ export class EmailService {
       text,
       `campaign invite for ${email}\n  Campaign: ${campaignTitle}\n  Link: ${inviteUrl}`,
     );
+  }
+
+  async sendStaffWelcome(email: string, name: string, password: string): Promise<void> {
+    const staffUrl = this.config.get("STAFF_WEB_URL", { infer: true });
+    const baseUrl = staffUrl ? staffUrl.replace(/\/$/, "") : this.webBaseUrl();
+    const loginUrl = `${baseUrl}/login`;
+    const subject = "Welcome to Halchal — Your Staff Account";
+    const text = `Hi ${name},\n\nYour Halchal staff account has been created.\n\nLogin URL: ${loginUrl}\nEmail: ${email}\nPassword: ${password}\n\nYou will be able to manage the brands assigned to you.\n\nTeam Halchal`;
+    await this.sendMail(email, subject, text, `staff welcome for ${email}`);
   }
 
   private getResendClient(): Resend {
