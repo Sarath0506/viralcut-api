@@ -274,7 +274,11 @@ model User {
 
   deviceTokens              DeviceToken[]
 
+  instagramOAuthTransactions InstagramOAuthTransaction[]
 
+  instagramConnections       InstagramConnection[]
+
+  youtubeConnections         YoutubeConnection[]
 
   @@map("users")
 
@@ -796,13 +800,179 @@ model CreatorProfile {
 
   participations CampaignParticipation[]
 
+  instagramOAuthTransactions InstagramOAuthTransaction[]
 
+  instagramConnections InstagramConnection[]
+
+  youtubeConnections YoutubeConnection[]
 
   @@unique([userId, platform, handle])
 
   @@index([userId])
 
   @@map("creator_profiles")
+
+}
+
+
+
+model InstagramOAuthTransaction {
+
+  id                   String    @id @default(cuid())
+
+  transactionId        String    @unique @map("transaction_id")
+
+  stateHash            String    @unique @map("state_hash")
+
+  userId               String    @map("user_id")
+
+  creatorProfileId     String    @map("creator_profile_id")
+
+  status               String    @default("started")
+
+  encryptedAccessToken String?   @map("encrypted_access_token") @db.Text
+
+  tokenExpiresAt       DateTime? @map("token_expires_at")
+
+  dataAccessExpiresAt  DateTime? @map("data_access_expires_at")
+
+  errorCode            String?   @map("error_code")
+
+  expiresAt            DateTime  @map("expires_at")
+
+  completedAt          DateTime? @map("completed_at")
+
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorProfile CreatorProfile @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@index([creatorProfileId])
+
+  @@index([expiresAt])
+
+  @@map("instagram_oauth_transactions")
+
+}
+
+
+
+model InstagramConnection {
+
+  id                   String    @id @default(cuid())
+
+  userId               String    @map("user_id")
+
+  creatorProfileId     String    @unique @map("creator_profile_id")
+
+  platformUserId       String    @map("platform_user_id")
+
+  platformHandle       String    @map("platform_handle")
+
+  encryptedAccessToken String    @map("encrypted_access_token") @db.Text
+
+  tokenExpiresAt       DateTime? @map("token_expires_at")
+
+  dataAccessExpiresAt  DateTime? @map("data_access_expires_at")
+
+  followerCount        Int       @default(0) @map("follower_count")
+
+  followsCount         Int       @default(0) @map("follows_count")
+
+  mediaCount           Int       @default(0) @map("media_count")
+
+  engagementRate       Float     @default(0) @map("engagement_rate")
+
+  profilePictureUrl    String?   @map("profile_picture_url")
+
+  metadata             Json      @default("{}")
+
+  isConnected          Boolean   @default(true) @map("is_connected")
+
+  lastSyncedAt         DateTime  @default(now()) @map("last_synced_at")
+
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorProfile CreatorProfile @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@index([platformUserId])
+
+  @@map("instagram_connections")
+
+}
+
+
+
+model YoutubeConnection {
+
+  id                    String    @id @default(cuid())
+
+  userId                String    @map("user_id")
+
+  creatorProfileId      String    @unique @map("creator_profile_id")
+
+  platformUserId        String    @map("platform_user_id")
+
+  platformHandle        String    @map("platform_handle")
+
+  encryptedAccessToken  String    @map("encrypted_access_token") @db.Text
+
+  encryptedRefreshToken String?   @map("encrypted_refresh_token") @db.Text
+
+  tokenExpiresAt        DateTime? @map("token_expires_at")
+
+  subscriberCount       Int       @default(0) @map("subscriber_count")
+
+  videoCount            Int       @default(0) @map("video_count")
+
+  totalViewCount        Int       @default(0) @map("total_view_count")
+
+  engagementRate        Float     @default(0) @map("engagement_rate")
+
+  profilePictureUrl     String?   @map("profile_picture_url")
+
+  metadata              Json      @default("{}")
+
+  isConnected           Boolean   @default(true) @map("is_connected")
+
+  lastSyncedAt          DateTime  @default(now()) @map("last_synced_at")
+
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorProfile CreatorProfile @relation(fields: [creatorProfileId], references: [id], onDelete: Cascade)
+
+
+
+  @@index([userId])
+
+  @@index([platformUserId])
+
+  @@map("youtube_connections")
 
 }
 

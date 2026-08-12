@@ -66,6 +66,27 @@ const envSchema = z.object({
   APP_LATEST_ANDROID_VERSION: z.string().optional(),
   APP_STORE_URL: z.string().url().optional(),
   PLAY_STORE_URL: z.string().url().optional(),
+  /** Instagram Login for creator social connection. */
+  INSTAGRAM_APP_ID: z.string().optional(),
+  INSTAGRAM_APP_SECRET: z.string().optional(),
+  INSTAGRAM_REDIRECT_URI: z.string().url().optional(),
+  INSTAGRAM_GRAPH_API_VERSION: z.string().default("v23.0"),
+  INSTAGRAM_OAUTH_SCOPES: z.string().default("instagram_business_basic"),
+  INSTAGRAM_OAUTH_DEBUG_LOG_SECRETS: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  INSTAGRAM_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  /** Google OAuth for creator YouTube social connection. */
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  YOUTUBE_REDIRECT_URI: z.string().url().optional(),
+  YOUTUBE_OAUTH_SCOPES: z
+    .string()
+    .default(
+      "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly",
+    ),
+  YOUTUBE_TOKEN_ENCRYPTION_KEY: z.string().optional(),
 }).superRefine((data, ctx) => {
   const r2Fields = [
     ["S3_ENDPOINT", data.S3_ENDPOINT],

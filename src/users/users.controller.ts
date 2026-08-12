@@ -79,6 +79,12 @@ export class UsersController {
     if (!allowed.includes(platform as never)) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
     }
+    if (platform === "instagram" || platform === "youtube") {
+      throw new BadRequestException({
+        code: "OFFICIAL_OAUTH_REQUIRED",
+        message: `${platform} must be managed from creator profile official OAuth.`,
+      });
+    }
     return this.users.disconnectSocial(user.sub, platform);
   }
 
@@ -91,6 +97,12 @@ export class UsersController {
     const allowed = ["instagram", "youtube", "twitter"] as const;
     if (!allowed.includes(platform as never)) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
+    }
+    if (platform === "instagram" || platform === "youtube") {
+      throw new BadRequestException({
+        code: "OFFICIAL_OAUTH_REQUIRED",
+        message: `${platform} must be connected with official OAuth.`,
+      });
     }
     if (!handle?.trim()) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "handle is required" });
