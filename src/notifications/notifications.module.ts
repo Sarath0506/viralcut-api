@@ -6,10 +6,11 @@ import { InAppNotificationController } from "./in-app-notification.controller";
 import { InAppNotificationService } from "./in-app-notification.service";
 import { PushNotificationService } from "./push-notification.service";
 import { WhatsappService } from "./whatsapp.service";
+import { WhatsappWebhookController } from "./whatsapp-webhook.controller";
 
 @Module({
   imports: [RealtimeModule],
-  controllers: [InAppNotificationController],
+  controllers: [InAppNotificationController, WhatsappWebhookController],
   providers: [WhatsappService, EmailService, InAppNotificationService, PushNotificationService],
   exports: [WhatsappService, EmailService, InAppNotificationService, PushNotificationService],
 })
