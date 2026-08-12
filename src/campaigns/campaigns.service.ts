@@ -326,9 +326,13 @@ export class CampaignsService {
         budgetPaise: dto.budgetPaise ?? existing.budgetPaise,
         brief: dto.brief ?? existing.brief,
       });
+      const effectiveBrandProfileId =
+        role === UserRole.admin && dto.brandProfileId !== undefined
+          ? dto.brandProfileId
+          : existing.brandProfileId;
       this.assertAdminCanPublish({
         ownership: existing.ownership,
-        brandProfileId: existing.brandProfileId,
+        brandProfileId: effectiveBrandProfileId,
         inviteAcceptedAt: existing.inviteAcceptedAt,
       });
     }
@@ -356,8 +360,9 @@ export class CampaignsService {
     const campaign = await this.prisma.campaign.update({
       where: { id: campaignId },
       data: {
+        brandProfileId: role === UserRole.admin ? dto.brandProfileId : undefined,
         status: dto.status,
-        wizardStep: dto.wizardStep,
+        wizardStep: this.furthestWizardStep(existing.wizardStep, dto.wizardStep),
         title: dto.title,
         category: dto.category,
         brief,
@@ -431,11 +436,37 @@ export class CampaignsService {
     return { deleted: true, id: campaignId };
   }
 
-  private assertAdminCanPublish(_campaign: {
+  private assertAdminCanPublish(campaign: {
     ownership?: CampaignOwnership;
     brandProfileId: string | null;
     inviteAcceptedAt: Date | null;
   }): void {
+    if (!campaign.brandProfileId) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "Assign a brand before publishing this campaign",
+      });
+    }
+  }
+
+  /**
+   * wizardStep tracks the furthest step a campaign has genuinely reached —
+   * it must never regress. Without this, going back to tweak an earlier
+   * step (which auto-saves with that step's name) would silently erase
+   * progress markers the wizard stepper relies on to gate jumping ahead.
+   */
+  private furthestWizardStep(
+    current: CampaignWizardStep,
+    incoming: CampaignWizardStep | undefined,
+  ): CampaignWizardStep {
+    if (!incoming) return current;
+    const order = [
+      CampaignWizardStep.basics,
+      CampaignWizardStep.brief,
+      CampaignWizardStep.payout,
+      CampaignWizardStep.review,
+    ];
+    return order.indexOf(incoming) > order.indexOf(current) ? incoming : current;
   }
 
   private assertStatusTransition(
