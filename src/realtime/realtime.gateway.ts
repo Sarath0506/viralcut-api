@@ -90,6 +90,18 @@ export class RealtimeGateway
     this.logger.debug(`Client disconnected: ${client.id}`);
   }
 
+  /**
+   * App-level liveness check — clients can't always trust their own
+   * `connected` flag (observed on iOS: the socket reports connected while
+   * silently no longer receiving pushes). Round-tripping this ack lets the
+   * client detect and force-reconnect a stale-but-"connected" socket.
+   */
+  @SubscribeMessage("ping")
+  handlePing(@ConnectedSocket() client: Socket): { ok: true } {
+    this.logger.debug(`Heartbeat ping from ${client.id}`);
+    return { ok: true };
+  }
+
   @SubscribeMessage("campaign:join")
   async handleJoinCampaign(
     @ConnectedSocket() client: Socket,

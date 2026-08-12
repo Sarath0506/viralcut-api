@@ -8,6 +8,7 @@ import { Prisma } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import { ApifyService } from "../common/apify.service";
+import { RealtimeService } from "../realtime/realtime.service";
 import type { CreateCreatorProfileDto } from "./dto/creator-profile.dto";
 
 @Injectable()
@@ -15,6 +16,7 @@ export class CreatorProfilesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly apify: ApifyService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   private format(profile: {
@@ -197,7 +199,7 @@ export class CreatorProfilesService {
 
     if (!existingStats) {
       // No existing stats — kick off Apify scraping in background
-      this._scrapeAndStoreStats(profileId, platform, handleOrUrl).catch(() => {});
+      this._scrapeAndStoreStats(userId, profileId, platform, handleOrUrl).catch(() => {});
     }
 
     return { platform, handle: handleOrUrl, status: existingStats ? "ready" : "fetching" };
@@ -221,6 +223,7 @@ export class CreatorProfilesService {
   }
 
   private async _scrapeAndStoreStats(
+    userId: string,
     profileId: string,
     platform: "instagram" | "youtube" | "twitter",
     handleOrUrl: string,
@@ -252,6 +255,8 @@ export class CreatorProfilesService {
       where: { id: profileId },
       data: { socialStats: { ...currentStats, [platform]: stats } as Prisma.InputJsonValue },
     });
+
+    this.realtime.emitCreatorProfileStatsUpdated(userId, profileId, platform);
   }
 
   /** Ensures the profile belongs to the user, throwing NOT_FOUND otherwise. */

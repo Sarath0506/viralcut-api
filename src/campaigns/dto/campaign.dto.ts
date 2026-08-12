@@ -189,6 +189,11 @@ export class CreateCampaignDto {
 }
 
 export class UpdateCampaignDto {
+  @ApiPropertyOptional({ description: "Admin-only: assign or reassign the owning brand" })
+  @IsOptional()
+  @IsString()
+  brandProfileId?: string;
+
   @ApiPropertyOptional({ enum: CampaignWizardStep })
   @IsOptional()
   @IsEnum(CampaignWizardStep)

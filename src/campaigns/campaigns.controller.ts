@@ -50,7 +50,7 @@ export class CampaignsController {
   @UseInterceptors(
     FileInterceptor("file", {
       storage: memoryStorage(),
-      limits: { fileSize: 50 * 1024 * 1024 },
+      limits: { fileSize: 200 * 1024 * 1024 },
       fileFilter: imageOnlyFileFilter,
     }),
   )
@@ -71,7 +71,7 @@ export class CampaignsController {
   @UseInterceptors(
     FileInterceptor("file", {
       storage: memoryStorage(),
-      limits: { fileSize: 50 * 1024 * 1024 },
+      limits: { fileSize: 200 * 1024 * 1024 },
       fileFilter: imageOrVideoFileFilter,
     }),
   )

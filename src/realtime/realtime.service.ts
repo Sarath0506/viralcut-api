@@ -34,6 +34,15 @@ export class RealtimeService {
     this.gateway.emitToCampaign(payload.campaignId, event, payload);
   }
 
+  /** Notifies the creator once a background Apify social-stats scrape finishes,
+   * so Connected Accounts can update itself without a manual pull-to-refresh. */
+  emitCreatorProfileStatsUpdated(creatorId: string, profileId: string, platform: string): void {
+    this.gateway.emitToCreator(creatorId, "creatorProfile:statsUpdated", {
+      profileId,
+      platform,
+    });
+  }
+
   emitDeliverableSubmitted(payload: DeliverableEventPayload): void {
     this.gateway.emitToCreator(
       payload.creatorId,
