@@ -87,6 +87,7 @@ const envSchema = z.object({
       "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly",
     ),
   YOUTUBE_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  PAYOUT_ACCOUNT_ENCRYPTION_KEY: z.string().optional(),
 }).superRefine((data, ctx) => {
   const r2Fields = [
     ["S3_ENDPOINT", data.S3_ENDPOINT],

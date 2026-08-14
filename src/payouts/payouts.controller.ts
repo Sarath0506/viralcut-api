@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from "@nestjs/swagger";
+import { Throttle } from "@nestjs/throttler";
 import { UserRole } from "@prisma/client";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -21,6 +22,7 @@ import {
   CreatePayoutMethodDto,
   CreateWithdrawalDto,
   PayoutMethodDto,
+  RevealPayoutMethodDto,
   UpdatePayoutMethodDto,
   WithdrawalDto,
 } from "./dto/payout.dto";
@@ -37,6 +39,16 @@ export class PayoutsController {
   @Get("payout-methods")
   listMethods(@CurrentUser() user: AuthJwtPayload) {
     return this.payouts.listPayoutMethods(user.sub);
+  }
+
+  @Get("payout-methods/:id/reveal")
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOkResponse({ type: RevealPayoutMethodDto })
+  revealMethod(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+  ) {
+    return this.payouts.revealAccountNumber(user.sub, id);
   }
 
   @Post("payout-methods")

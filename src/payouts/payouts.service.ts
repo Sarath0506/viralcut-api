@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { WithdrawalStatus } from "@prisma/client";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 function computeWithdrawalFeePaise(
   amountPaise: number,
   feeBps: number,
@@ -13,6 +14,7 @@ function computeWithdrawalFeePaise(
   return Math.floor((amountPaise * feeBps) / 10000);
 }
 
+import { ActivityLogService } from "../activity/activity-log.service";
 import type { Env } from "../config/env";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -24,7 +26,50 @@ export class PayoutsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
     private readonly notifications: InAppNotificationService,
+    private readonly activityLog: ActivityLogService,
   ) {}
+
+  /**
+   * accountNumber is stored as AES-256-GCM ciphertext (iv.tag.ciphertext,
+   * base64url-joined) — never in plaintext. Same pattern as the Instagram/
+   * YouTube OAuth token encryption in creator-profiles.
+   */
+  private get encryptionKey(): Buffer {
+    return createHash("sha256")
+      .update(
+        this.config.get("PAYOUT_ACCOUNT_ENCRYPTION_KEY", { infer: true }) ??
+          this.config.get("JWT_SECRET", { infer: true }),
+      )
+      .digest();
+  }
+
+  private encryptAccount(value: string): string {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", this.encryptionKey, iv);
+    const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
+  }
+
+  private decryptAccount(value: string): string {
+    const [ivRaw, tagRaw, encryptedRaw] = value.split(".");
+    if (!ivRaw || !tagRaw || !encryptedRaw) {
+      throw new BadRequestException({
+        code: "PAYOUT_ACCOUNT_INVALID",
+        message: "Stored account number is invalid.",
+      });
+    }
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      this.encryptionKey,
+      Buffer.from(ivRaw, "base64url"),
+    );
+    decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+    return Buffer.concat([
+      decipher.update(Buffer.from(encryptedRaw, "base64url")),
+      decipher.final(),
+    ]).toString("utf8");
+  }
 
   maskAccount(account: string): string {
     if (account.includes("@")) {
@@ -61,7 +106,7 @@ export class PayoutsService {
         type: dto.type,
         label: dto.label,
         accountHolderName: dto.accountHolderName,
-        accountNumber: dto.account,
+        accountNumber: this.encryptAccount(dto.account),
         ifscCode: dto.type === "bank" ? dto.ifscCode : null,
         bankName: dto.bankName ?? null,
         accountMasked: this.maskAccount(dto.account),
@@ -79,6 +124,29 @@ export class PayoutsService {
       bankName: method.bankName,
       isDefault: method.isDefault,
     };
+  }
+
+  /**
+   * Decrypts and returns the full account number for the authenticated
+   * owner. Rate-limited at the controller and audit-logged here — this is
+   * the one path that discloses more than the last 4 digits.
+   */
+  async revealAccountNumber(userId: string, methodId: string): Promise<{ accountNumber: string }> {
+    const method = await this.prisma.payoutMethod.findFirst({
+      where: { id: methodId, userId },
+    });
+    if (!method) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Payout method not found" });
+    }
+
+    const accountNumber = this.decryptAccount(method.accountNumber);
+
+    await this.activityLog.log(userId, "payout_method.account_revealed", {
+      targetType: "payout_method",
+      targetId: methodId,
+    });
+
+    return { accountNumber };
   }
 
   async updatePayoutMethod(userId: string, methodId: string, dto: UpdatePayoutMethodDto) {
