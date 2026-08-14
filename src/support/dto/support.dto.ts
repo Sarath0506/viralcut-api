@@ -1,5 +1,5 @@
 import { ApiProperty } from "@nestjs/swagger";
-import { IsString, MaxLength, MinLength } from "class-validator";
+import { IsEnum, IsString, MaxLength, MinLength } from "class-validator";
 
 export class CreateSupportTicketDto {
   @ApiProperty()
@@ -15,10 +15,14 @@ export class CreateSupportTicketDto {
   message!: string;
 }
 
-export class ResolveSupportTicketDto {
+export class RespondSupportTicketDto {
+  @ApiProperty({ enum: ["investigating", "resolved"] })
+  @IsEnum(["investigating", "resolved"])
+  action!: "investigating" | "resolved";
+
   @ApiProperty()
   @IsString()
   @MinLength(3)
   @MaxLength(2000)
-  resolutionNote!: string;
+  note!: string;
 }

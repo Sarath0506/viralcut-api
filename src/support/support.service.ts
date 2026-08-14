@@ -121,7 +121,7 @@ export class SupportService {
     };
   }
 
-  async resolveTicket(ticketId: string, resolutionNote: string) {
+  async respondToTicket(ticketId: string, action: "investigating" | "resolved", note: string) {
     const ticket = await this.prisma.supportTicket.findUnique({ where: { id: ticketId } });
     if (!ticket) {
       throw new NotFoundException({ code: "NOT_FOUND", message: "Ticket not found" });
@@ -130,21 +130,22 @@ export class SupportService {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Ticket is already resolved" });
     }
 
+    const resolving = action === "resolved";
     const updated = await this.prisma.supportTicket.update({
       where: { id: ticketId },
       data: {
-        status: SupportTicketStatus.resolved,
-        resolutionNote: resolutionNote.trim(),
-        resolvedAt: new Date(),
+        status: resolving ? SupportTicketStatus.resolved : SupportTicketStatus.under_investigation,
+        resolutionNote: note.trim(),
+        resolvedAt: resolving ? new Date() : null,
       },
     });
 
-    this.realtime.emitSupportTicketResolved(ticket.creatorId, updated.id);
+    this.realtime.emitSupportTicketUpdated(ticket.creatorId, updated.id);
 
     await this.notifications.create(ticket.creatorId, "creator", {
-      type: "support_ticket.resolved",
-      title: "Your support ticket was resolved",
-      body: updated.subject,
+      type: resolving ? "support_ticket.resolved" : "support_ticket.updated",
+      title: resolving ? "Your support ticket was resolved" : "Update on your support ticket",
+      body: updated.resolutionNote ?? updated.subject,
       link: "/support",
     });
 
