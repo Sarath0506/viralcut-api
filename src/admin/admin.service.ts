@@ -574,6 +574,10 @@ export class AdminService {
       bio: creator.bio,
       socialLinks: (creator.socialLinks as Record<string, string> | null) ?? null,
       kycStatus: creator.kycStatus,
+      kycDocumentUrl: creator.kycDocumentUrl,
+      kycDocumentType: creator.kycDocumentType,
+      kycSubmittedAt: creator.kycSubmittedAt?.toISOString() ?? null,
+      kycRejectionReason: creator.kycRejectionReason,
       isActive: creator.isActive,
       createdAt: creator.createdAt.toISOString(),
       linkedProfiles: linkedProfiles.map((p) => ({
