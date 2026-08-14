@@ -120,6 +120,11 @@ export class PayoutMethodDto {
   isDefault!: boolean;
 }
 
+export class RevealPayoutMethodDto {
+  @ApiProperty({ description: "Full, decrypted account number or UPI id" })
+  accountNumber!: string;
+}
+
 export class WithdrawalDto {
   @ApiProperty()
   id!: string;

@@ -75,14 +75,6 @@ export class CreatorProfilesController {
     return this.instagramOAuth.complete(user.sub, id, transactionId);
   }
 
-  @Delete(":id/social/instagram")
-  disconnectInstagram(
-    @CurrentUser() user: AuthJwtPayload,
-    @Param("id") id: string,
-  ) {
-    return this.instagramOAuth.disconnect(user.sub, id);
-  }
-
   @Get(":id/social/youtube/auth-url")
   getYoutubeAuthUrl(
     @CurrentUser() user: AuthJwtPayload,
@@ -112,12 +104,6 @@ export class CreatorProfilesController {
     if (!allowed.includes(platform as never)) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
     }
-    if (platform === "instagram" || platform === "youtube") {
-      throw new BadRequestException({
-        code: "OFFICIAL_OAUTH_REQUIRED",
-        message: `${platform} must be connected with official OAuth.`,
-      });
-    }
     if (!handle?.trim()) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "handle is required" });
     }
@@ -133,12 +119,6 @@ export class CreatorProfilesController {
     const allowed = ["instagram", "youtube", "twitter"] as const;
     if (!allowed.includes(platform as never)) {
       throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Invalid platform" });
-    }
-    if (platform === "instagram") {
-      return this.instagramOAuth.disconnect(user.sub, id);
-    }
-    if (platform === "youtube") {
-      return this.youtubeOAuth.disconnect(user.sub, id);
     }
     return this.profiles.disconnectSocial(user.sub, id, platform);
   }

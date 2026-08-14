@@ -1,4 +1,3 @@
-import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { CreatorProfilesController } from "./creator-profiles.controller";
@@ -27,26 +26,38 @@ function makeController() {
   return { controller, profiles, instagramOAuth, youtubeOAuth, user };
 }
 
-describe("CreatorProfilesController social OAuth cleanup", () => {
-  it("rejects manual Instagram connect", () => {
+describe("CreatorProfilesController social connect (Apify-based)", () => {
+  it("connects Instagram via handle", () => {
     const { controller, user, profiles } = makeController();
+    profiles.connectSocial.mockReturnValue({ platform: "instagram" });
 
-    expect(() =>
-      controller.connectSocial(user, "profile-1", "instagram", "handle"),
-    ).toThrow(BadRequestException);
-    expect(profiles.connectSocial).not.toHaveBeenCalled();
+    expect(controller.connectSocial(user, "profile-1", "instagram", "@handle")).toEqual({
+      platform: "instagram",
+    });
+    expect(profiles.connectSocial).toHaveBeenCalledWith(
+      "user-1",
+      "profile-1",
+      "instagram",
+      "@handle",
+    );
   });
 
-  it("rejects manual YouTube connect", () => {
+  it("connects YouTube via handle", () => {
     const { controller, user, profiles } = makeController();
+    profiles.connectSocial.mockReturnValue({ platform: "youtube" });
 
-    expect(() =>
-      controller.connectSocial(user, "profile-1", "youtube", "channel"),
-    ).toThrow(BadRequestException);
-    expect(profiles.connectSocial).not.toHaveBeenCalled();
+    expect(controller.connectSocial(user, "profile-1", "youtube", "channel")).toEqual({
+      platform: "youtube",
+    });
+    expect(profiles.connectSocial).toHaveBeenCalledWith(
+      "user-1",
+      "profile-1",
+      "youtube",
+      "channel",
+    );
   });
 
-  it("keeps manual Twitter connect", () => {
+  it("connects Twitter via handle", () => {
     const { controller, user, profiles } = makeController();
     profiles.connectSocial.mockReturnValue({ platform: "twitter" });
 
@@ -61,11 +72,11 @@ describe("CreatorProfilesController social OAuth cleanup", () => {
     );
   });
 
-  it("routes Instagram and YouTube disconnect through OAuth services", () => {
-    const { controller, user, profiles, instagramOAuth, youtubeOAuth } =
-      makeController();
-    instagramOAuth.disconnect.mockReturnValue({ platform: "instagram" });
-    youtubeOAuth.disconnect.mockReturnValue({ platform: "youtube" });
+  it("disconnects Instagram and YouTube through the same Apify-based path, not OAuth services", () => {
+    const { controller, user, profiles, instagramOAuth, youtubeOAuth } = makeController();
+    profiles.disconnectSocial.mockImplementation((_userId, _profileId, platform) => ({
+      platform,
+    }));
 
     expect(controller.disconnectSocial(user, "profile-1", "instagram")).toEqual({
       platform: "instagram",
@@ -73,6 +84,9 @@ describe("CreatorProfilesController social OAuth cleanup", () => {
     expect(controller.disconnectSocial(user, "profile-1", "youtube")).toEqual({
       platform: "youtube",
     });
-    expect(profiles.disconnectSocial).not.toHaveBeenCalled();
+    expect(profiles.disconnectSocial).toHaveBeenCalledWith("user-1", "profile-1", "instagram");
+    expect(profiles.disconnectSocial).toHaveBeenCalledWith("user-1", "profile-1", "youtube");
+    expect(instagramOAuth.disconnect).not.toHaveBeenCalled();
+    expect(youtubeOAuth.disconnect).not.toHaveBeenCalled();
   });
 });
