@@ -23,7 +23,7 @@ const envSchema = z.object({
   AGENCY_WEB_URL: z.string().url().optional(),
   /** Brand owner invite link lifetime, e.g. `7d` */
   BRAND_INVITE_TTL: z.string().default("7d"),
-  WITHDRAWAL_FEE_BPS: z.coerce.number().default(150),
+  WITHDRAWAL_FEE_BPS: z.coerce.number().default(500),
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
   WHATSAPP_ACCESS_TOKEN: z.string().optional(),
   WHATSAPP_API_VERSION: z.string().default("v25.0"),

@@ -62,6 +62,18 @@ export class RealtimeService {
     this.gateway.emitToCreator(payload.creatorId, "deliverable:live_proof", payload);
   }
 
+  /** Notifies the creator once a payout lands in their wallet, so Get Paid
+   * updates from Pending without a manual pull-to-refresh. */
+  emitDeliverablePaid(payload: DeliverableEventPayload & { amountPaise: number }): void {
+    this.gateway.emitToCreator(payload.creatorId, "deliverable:paid", payload);
+    this.broadcastDeliverableToBrand("deliverable:paid", payload);
+  }
+
+  /** Notifies the creator once an admin resolves their support ticket. */
+  emitSupportTicketResolved(creatorId: string, ticketId: string): void {
+    this.gateway.emitToCreator(creatorId, "supportTicket:resolved", { ticketId });
+  }
+
   emitParticipationJoined(payload: ParticipationJoinedPayload): void {
     this.gateway.emitToCreator(
       payload.creatorId,

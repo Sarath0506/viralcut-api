@@ -21,6 +21,7 @@ import { CreatorProfilesModule } from "./creator-profiles/creator-profiles.modul
 import { CreatorsModule } from "./creators/creators.module";
 import { RealtimeModule } from "./realtime/realtime.module";
 import { SubmissionsModule } from "./submissions/submissions.module";
+import { SupportModule } from "./support/support.module";
 import { TasksModule } from "./tasks/tasks.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { UsersModule } from "./users/users.module";
@@ -68,6 +69,7 @@ import { WalletModule } from "./wallet/wallet.module";
     CreatorProfilesModule,
     CreatorsModule,
     TasksModule,
+    SupportModule,
     HealthModule,
     AppVersionModule,
   ],

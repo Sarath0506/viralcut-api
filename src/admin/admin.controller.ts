@@ -14,7 +14,7 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { StaffAccessLevel, UserRole } from "@prisma/client";
+import { StaffAccessLevel, SupportTicketStatus, UserRole } from "@prisma/client";
 import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from "class-validator";
 import { memoryStorage } from "multer";
 
@@ -26,6 +26,7 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { ListCampaignsQueryDto } from "../campaigns/dto/list-campaigns-query.dto";
 import { ObjectStorageService } from "../storage/object-storage.service";
+import { ResolveSupportTicketDto } from "../support/dto/support.dto";
 import { AdminService } from "./admin.service";
 
 
@@ -183,6 +184,21 @@ export class AdminController {
   @Post("creators/:id/kyc-review")
   reviewKyc(@Param("id") id: string, @Body() body: ReviewKycDto) {
     return this.admin.reviewKyc(id, body.action, body.reason);
+  }
+
+  @Get("support-tickets")
+  listSupportTickets(@Query("status") status?: SupportTicketStatus) {
+    return this.admin.listSupportTickets(status);
+  }
+
+  @Get("support-tickets/:id")
+  getSupportTicket(@Param("id") id: string) {
+    return this.admin.getSupportTicket(id);
+  }
+
+  @Post("support-tickets/:id/resolve")
+  resolveSupportTicket(@Param("id") id: string, @Body() body: ResolveSupportTicketDto) {
+    return this.admin.resolveSupportTicket(id, body.resolutionNote);
   }
 
   @Get("campaigns")
