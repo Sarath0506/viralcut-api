@@ -5,12 +5,13 @@ import { CampaignsModule } from "../campaigns/campaigns.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { RealtimeModule } from "../realtime/realtime.module";
 import { StorageModule } from "../storage/storage.module";
+import { SupportModule } from "../support/support.module";
 import { WalletModule } from "../wallet/wallet.module";
 import { AdminController } from "./admin.controller";
 import { AdminService } from "./admin.service";
 
 @Module({
-  imports: [AuthModule, CampaignsModule, NotificationsModule, RealtimeModule, StorageModule, WalletModule],
+  imports: [AuthModule, CampaignsModule, NotificationsModule, RealtimeModule, StorageModule, SupportModule, WalletModule],
   controllers: [AdminController],
   providers: [AdminService],
 })

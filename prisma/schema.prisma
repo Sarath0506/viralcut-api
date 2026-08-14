@@ -134,6 +134,12 @@ enum TaskStatus {
   done
 }
 
+enum SupportTicketStatus {
+  under_investigation
+
+  resolved
+}
+
 model User {
   id String @id @default(cuid())
 
@@ -224,6 +230,8 @@ model User {
   instagramConnections InstagramConnection[]
 
   youtubeConnections YoutubeConnection[]
+
+  supportTickets SupportTicket[]
 
   @@map("users")
 }
@@ -960,6 +968,31 @@ model Withdrawal {
 
   @@index([userId, status])
   @@map("withdrawals")
+}
+
+model SupportTicket {
+  id String @id @default(cuid())
+
+  creatorId String @map("creator_id")
+
+  subject String
+
+  message String @db.Text
+
+  status SupportTicketStatus @default(under_investigation)
+
+  resolutionNote String? @map("resolution_note") @db.Text
+
+  resolvedAt DateTime? @map("resolved_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  creator User @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@index([creatorId, status])
+  @@map("support_tickets")
 }
 
 // Reconstructed from the live database on 2026-08-14 — migration

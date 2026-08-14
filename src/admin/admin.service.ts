@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import { CampaignInviteStatus, FormatDeliverableStatus, KycStatus, StaffAccessLevel, UserRole } from "@prisma/client";
+import { CampaignInviteStatus, FormatDeliverableStatus, KycStatus, StaffAccessLevel, SupportTicketStatus, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 
 import { ActivityLogService } from "../activity/activity-log.service";
@@ -10,6 +10,7 @@ import { EmailService } from "../notifications/email.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { computeParticipationSummary, isParticipationCompleted } from "../participation/participation-summary";
 import { RealtimeService } from "../realtime/realtime.service";
+import { SupportService } from "../support/support.service";
 import { WalletService } from "../wallet/wallet.service";
 import type { ListCampaignsQueryDto } from "../campaigns/dto/list-campaigns-query.dto";
 
@@ -37,6 +38,7 @@ export class AdminService {
     private readonly activityLog: ActivityLogService,
     private readonly notifications: InAppNotificationService,
     private readonly realtime: RealtimeService,
+    private readonly support: SupportService,
   ) {}
 
   async listBrands() {
@@ -660,6 +662,18 @@ export class AdminService {
     });
 
     return { id: updated.id, kycStatus: updated.kycStatus };
+  }
+
+  listSupportTickets(status?: SupportTicketStatus) {
+    return this.support.listAllTickets(status);
+  }
+
+  getSupportTicket(id: string) {
+    return this.support.getTicketDetail(id);
+  }
+
+  resolveSupportTicket(id: string, resolutionNote: string) {
+    return this.support.resolveTicket(id, resolutionNote);
   }
 
   private formatStaffUser(user: { id: string; email: string | null; displayName: string | null; createdAt: Date; isActive: boolean; staffBrandAssignments?: { accessLevel: StaffAccessLevel; brandProfile: { id: string; companyName: string; logoUrl: string | null } }[] }) {
