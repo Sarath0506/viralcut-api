@@ -27,6 +27,7 @@ export class WalletService {
     const deliverables = await this.prisma.formatDeliverable.findMany({
       where: {
         status: { in: pendingStatuses },
+        paidAt: null,
         participation: { creatorId, ...(creatorProfileId ? { creatorProfileId } : {}) },
       },
       include: {
