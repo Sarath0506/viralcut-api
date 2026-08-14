@@ -9,6 +9,7 @@ import { CampaignsService } from "../campaigns/campaigns.service";
 import { EmailService } from "../notifications/email.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { computeParticipationSummary, isParticipationCompleted } from "../participation/participation-summary";
+import { RealtimeService } from "../realtime/realtime.service";
 import { WalletService } from "../wallet/wallet.service";
 import type { ListCampaignsQueryDto } from "../campaigns/dto/list-campaigns-query.dto";
 
@@ -35,6 +36,7 @@ export class AdminService {
     private readonly wallet: WalletService,
     private readonly activityLog: ActivityLogService,
     private readonly notifications: InAppNotificationService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   async listBrands() {
@@ -758,7 +760,7 @@ export class AdminService {
       include: {
         participation: {
           include: {
-            campaign: { select: { title: true, ratePer1kPaise: true, maxPayoutPaise: true } },
+            campaign: { select: { title: true, ratePer1kPaise: true, maxPayoutPaise: true, brandProfileId: true } },
           },
         },
       },
@@ -768,7 +770,7 @@ export class AdminService {
     let totalPaidPaise = 0;
 
     for (const d of deliverables) {
-      const { title, ratePer1kPaise, maxPayoutPaise } = d.participation.campaign;
+      const { title, ratePer1kPaise, maxPayoutPaise, brandProfileId } = d.participation.campaign;
       const amountPaise = computeEstimatedPaise(d.viewCount, ratePer1kPaise, maxPayoutPaise);
 
       // Atomic compare-and-swap via the WHERE clause: only proceeds if still unpaid,
@@ -785,6 +787,24 @@ export class AdminService {
         d.id,
         `Payout: ${title} (${d.platform})`,
       );
+
+      this.realtime.emitDeliverablePaid({
+        deliverableId: d.id,
+        participationId: d.participationId,
+        campaignId: d.participation.campaignId,
+        creatorId: d.participation.creatorId,
+        brandProfileId,
+        platform: d.platform,
+        status: d.status,
+        amountPaise,
+      });
+
+      await this.notifications.create(d.participation.creatorId, "creator", {
+        type: "payout_paid",
+        title: "You got paid 💸",
+        body: `${title} (${d.platform}) payout has landed in your wallet.`,
+        link: "/wallet",
+      });
 
       paidCount += 1;
       totalPaidPaise += amountPaise;
