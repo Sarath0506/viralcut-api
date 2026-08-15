@@ -69,9 +69,9 @@ export class RealtimeService {
     this.broadcastDeliverableToBrand("deliverable:paid", payload);
   }
 
-  /** Notifies the creator once an admin resolves their support ticket. */
-  emitSupportTicketResolved(creatorId: string, ticketId: string): void {
-    this.gateway.emitToCreator(creatorId, "supportTicket:resolved", { ticketId });
+  /** Notifies the creator when an admin responds to (or resolves) their ticket. */
+  emitSupportTicketUpdated(creatorId: string, ticketId: string): void {
+    this.gateway.emitToCreator(creatorId, "supportTicket:updated", { ticketId });
   }
 
   emitParticipationJoined(payload: ParticipationJoinedPayload): void {

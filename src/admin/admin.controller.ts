@@ -26,7 +26,7 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { ListCampaignsQueryDto } from "../campaigns/dto/list-campaigns-query.dto";
 import { ObjectStorageService } from "../storage/object-storage.service";
-import { ResolveSupportTicketDto } from "../support/dto/support.dto";
+import { RespondSupportTicketDto } from "../support/dto/support.dto";
 import { AdminService } from "./admin.service";
 
 
@@ -196,9 +196,9 @@ export class AdminController {
     return this.admin.getSupportTicket(id);
   }
 
-  @Post("support-tickets/:id/resolve")
-  resolveSupportTicket(@Param("id") id: string, @Body() body: ResolveSupportTicketDto) {
-    return this.admin.resolveSupportTicket(id, body.resolutionNote);
+  @Post("support-tickets/:id/respond")
+  respondToSupportTicket(@Param("id") id: string, @Body() body: RespondSupportTicketDto) {
+    return this.admin.respondToSupportTicket(id, body.action, body.note);
   }
 
   @Get("campaigns")

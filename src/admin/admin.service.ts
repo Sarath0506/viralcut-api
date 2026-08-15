@@ -672,8 +672,8 @@ export class AdminService {
     return this.support.getTicketDetail(id);
   }
 
-  resolveSupportTicket(id: string, resolutionNote: string) {
-    return this.support.resolveTicket(id, resolutionNote);
+  respondToSupportTicket(id: string, action: "investigating" | "resolved", note: string) {
+    return this.support.respondToTicket(id, action, note);
   }
 
   private formatStaffUser(user: { id: string; email: string | null; displayName: string | null; createdAt: Date; isActive: boolean; staffBrandAssignments?: { accessLevel: StaffAccessLevel; brandProfile: { id: string; companyName: string; logoUrl: string | null } }[] }) {
