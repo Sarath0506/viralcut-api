@@ -756,6 +756,14 @@ export class AdminService {
     return this.adminRoles.listAdminAccounts();
   }
 
+  async createAdminAccount(dto: { name: string; email: string; password: string; adminRoleId?: string | null }) {
+    const account = await this.adminRoles.createAdminAccount(dto);
+    void this.email
+      .sendAdminWelcome(account.email!, dto.name.trim(), dto.password, account.adminRoleName)
+      .catch(() => null);
+    return account;
+  }
+
   private formatStaffUser(user: { id: string; email: string | null; displayName: string | null; createdAt: Date; isActive: boolean; staffBrandAssignments?: { accessLevel: StaffAccessLevel; brandProfile: { id: string; companyName: string; logoUrl: string | null } }[] }) {
     return {
       id: user.id,

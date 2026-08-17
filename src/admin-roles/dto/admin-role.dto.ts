@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { AdminPermissionLevel, AdminSection } from "@prisma/client";
-import { ArrayMinSize, IsArray, IsBoolean, IsEnum, IsOptional, IsString, MaxLength, MinLength, ValidateNested } from "class-validator";
+import { ArrayMinSize, IsArray, IsBoolean, IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 
 export class CreateAdminRoleDto {
@@ -51,6 +51,26 @@ export class SetSectionPermissionsDto {
 
 export class AssignAdminRoleDto {
   @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @IsString()
+  adminRoleId?: string | null;
+}
+
+export class CreateAdminAccountDto {
+  @ApiProperty()
+  @IsString()
+  name!: string;
+
+  @ApiProperty()
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(8)
+  password!: string;
+
+  @ApiPropertyOptional({ nullable: true, description: "Omit or null for Super Admin" })
   @IsOptional()
   @IsString()
   adminRoleId?: string | null;

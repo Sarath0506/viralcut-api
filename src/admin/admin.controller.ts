@@ -31,6 +31,7 @@ import { AdminSectionGuard } from "../admin-roles/guards/admin-section.guard";
 import { SuperAdminOnlyGuard } from "../admin-roles/guards/super-admin-only.guard";
 import {
   AssignAdminRoleDto,
+  CreateAdminAccountDto,
   CreateAdminRoleDto,
   SetSectionPermissionsDto,
   UpdateAdminRoleDto,
@@ -180,6 +181,12 @@ export class AdminController {
   @UseGuards(SuperAdminOnlyGuard)
   listAdminAccounts() {
     return this.admin.listAdminAccounts();
+  }
+
+  @Post("admins")
+  @UseGuards(SuperAdminOnlyGuard)
+  createAdminAccount(@Body() body: CreateAdminAccountDto) {
+    return this.admin.createAdminAccount(body);
   }
 
   @Patch("admins/:userId/role")

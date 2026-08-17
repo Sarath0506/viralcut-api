@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { AdminPermissionLevel, AdminSection, UserRole } from "@prisma/client";
+import * as bcrypt from "bcryptjs";
 
 import { PrismaService } from "../prisma/prisma.service";
 
@@ -163,6 +164,40 @@ export class AdminRolesService {
     }
     await this.prisma.user.update({ where: { id: userId }, data: { adminRoleId } });
     return { id: userId, adminRoleId };
+  }
+
+  async createAdminAccount(dto: { name: string; email: string; password: string; adminRoleId?: string | null }) {
+    const email = dto.email.toLowerCase().trim();
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      throw new ConflictException({ code: "CONFLICT", message: "Email already registered" });
+    }
+    if (dto.adminRoleId) {
+      const role = await this.prisma.adminRole.findUnique({ where: { id: dto.adminRoleId } });
+      if (!role) {
+        throw new BadRequestException({ code: "VALIDATION_ERROR", message: "Role not found" });
+      }
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, 12);
+    const user = await this.prisma.user.create({
+      data: {
+        role: UserRole.admin,
+        email,
+        passwordHash,
+        displayName: dto.name.trim(),
+        adminRoleId: dto.adminRoleId ?? null,
+        termsAcceptedAt: new Date(),
+      },
+      include: { adminRole: { select: { name: true } } },
+    });
+    return {
+      id: user.id,
+      name: user.displayName ?? user.email ?? "Admin",
+      email: user.email,
+      adminRoleId: user.adminRoleId,
+      adminRoleName: user.adminRole?.name ?? "Super Admin",
+    };
   }
 
   async listAdminAccounts() {

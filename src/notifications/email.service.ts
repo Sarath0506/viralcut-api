@@ -81,6 +81,14 @@ export class EmailService {
     await this.sendMail(email, subject, text, `staff welcome for ${email}`);
   }
 
+  async sendAdminWelcome(email: string, name: string, password: string, roleName: string): Promise<void> {
+    const baseUrl = this.webBaseUrl();
+    const loginUrl = `${baseUrl}/admin/login`;
+    const subject = "Welcome to Halchal — Your Admin Account";
+    const text = `Hi ${name},\n\nYour Halchal admin account has been created with the "${roleName}" role.\n\nLogin URL: ${loginUrl}\nEmail: ${email}\nPassword: ${password}\n\nTeam Halchal`;
+    await this.sendMail(email, subject, text, `admin welcome for ${email}`);
+  }
+
   private getResendClient(): Resend {
     if (!this.resendClient) {
       this.resendClient = new Resend(this.config.get("RESEND_API_KEY"));
