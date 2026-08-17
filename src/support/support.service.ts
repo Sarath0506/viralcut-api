@@ -146,7 +146,7 @@ export class SupportService {
       type: resolving ? "support_ticket.resolved" : "support_ticket.updated",
       title: resolving ? "Your support ticket was resolved" : "Update on your support ticket",
       body: updated.resolutionNote ?? updated.subject,
-      link: "/support",
+      link: "/support/raise-ticket",
     });
 
     return formatTicket(updated);
