@@ -19,6 +19,7 @@ import { PayoutsModule } from "./payouts/payouts.module";
 import { CreatorModule } from "./creator/creator.module";
 import { CreatorProfilesModule } from "./creator-profiles/creator-profiles.module";
 import { CreatorsModule } from "./creators/creators.module";
+import { FaqsModule } from "./faqs/faqs.module";
 import { RealtimeModule } from "./realtime/realtime.module";
 import { SubmissionsModule } from "./submissions/submissions.module";
 import { SupportModule } from "./support/support.module";
@@ -70,6 +71,7 @@ import { WalletModule } from "./wallet/wallet.module";
     CreatorsModule,
     TasksModule,
     SupportModule,
+    FaqsModule,
     HealthModule,
     AppVersionModule,
   ],
