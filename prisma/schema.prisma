@@ -140,6 +140,34 @@ enum SupportTicketStatus {
   resolved
 }
 
+enum AdminSection {
+  dashboard
+
+  brands
+
+  clippers
+
+  campaigns
+
+  analytics
+
+  tickets
+
+  faqs
+
+  notifications
+
+  team
+}
+
+enum AdminPermissionLevel {
+  hidden
+
+  view
+
+  manage
+}
+
 model User {
   id String @id @default(cuid())
 
@@ -180,6 +208,11 @@ model User {
   kycReviewedAt DateTime? @map("kyc_reviewed_at")
 
   kycRejectionReason String? @map("kyc_rejection_reason")
+
+  // Null = Super Admin (full, unrestricted access) — the default for every
+  // existing admin so assigning this feature never silently locks anyone
+  // out. Only set for admins deliberately restricted to a custom role.
+  adminRoleId String? @map("admin_role_id")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -234,6 +267,8 @@ model User {
   supportTickets SupportTicket[]
 
   bulkNotificationsSent BulkNotificationLog[]
+
+  adminRole AdminRole? @relation(fields: [adminRoleId], references: [id], onDelete: SetNull)
 
   @@map("users")
 }
@@ -1129,4 +1164,37 @@ model Faq {
 
   @@index([order])
   @@map("faqs")
+}
+
+model AdminRole {
+  id String @id @default(cuid())
+
+  name String @unique
+
+  canSeeMoney Boolean @default(false) @map("can_see_money")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  permissions AdminSectionPermission[]
+
+  users User[]
+
+  @@map("admin_roles")
+}
+
+model AdminSectionPermission {
+  id String @id @default(cuid())
+
+  adminRoleId String @map("admin_role_id")
+
+  section AdminSection
+
+  level AdminPermissionLevel @default(hidden)
+
+  adminRole AdminRole @relation(fields: [adminRoleId], references: [id], onDelete: Cascade)
+
+  @@unique([adminRoleId, section])
+  @@map("admin_section_permissions")
 }

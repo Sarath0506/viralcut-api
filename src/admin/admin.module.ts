@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 
+import { AdminRolesModule } from "../admin-roles/admin-roles.module";
 import { AuthModule } from "../auth/auth.module";
 import { CampaignsModule } from "../campaigns/campaigns.module";
 import { FaqsModule } from "../faqs/faqs.module";
@@ -13,6 +14,7 @@ import { AdminService } from "./admin.service";
 
 @Module({
   imports: [
+    AdminRolesModule,
     AuthModule,
     CampaignsModule,
     FaqsModule,

@@ -1,10 +1,11 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import { CampaignInviteStatus, FormatDeliverableStatus, KycStatus, StaffAccessLevel, SupportTicketStatus, UserRole } from "@prisma/client";
+import { AdminPermissionLevel, AdminSection, CampaignInviteStatus, FormatDeliverableStatus, KycStatus, StaffAccessLevel, SupportTicketStatus, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 
 import { ActivityLogService } from "../activity/activity-log.service";
 import { computeEstimatedPaise } from "../common/earnings";
 import { PrismaService } from "../prisma/prisma.service";
+import { AdminRolesService } from "../admin-roles/admin-roles.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
 import { FaqsService } from "../faqs/faqs.service";
 import { BulkNotificationService } from "../notifications/bulk-notification.service";
@@ -43,6 +44,7 @@ export class AdminService {
     private readonly support: SupportService,
     private readonly bulkNotifications: BulkNotificationService,
     private readonly faqs: FaqsService,
+    private readonly adminRoles: AdminRolesService,
   ) {}
 
   async listBrands() {
@@ -713,6 +715,45 @@ export class AdminService {
 
   reorderFaqs(orderedIds: string[]) {
     return this.faqs.reorder(orderedIds);
+  }
+
+  listAdminRoles() {
+    return this.adminRoles.listRoles();
+  }
+
+  createAdminRole(dto: { name: string; canSeeMoney?: boolean }) {
+    return this.adminRoles.createRole(dto);
+  }
+
+  updateAdminRole(id: string, dto: { name?: string; canSeeMoney?: boolean }) {
+    return this.adminRoles.updateRole(id, dto);
+  }
+
+  deleteAdminRole(id: string) {
+    return this.adminRoles.deleteRole(id);
+  }
+
+  setAdminRolePermissions(
+    roleId: string,
+    permissions: { section: AdminSection; level: AdminPermissionLevel }[],
+  ) {
+    return this.adminRoles.setSectionPermissions(roleId, permissions);
+  }
+
+  resetAdminRolesToDefaults() {
+    return this.adminRoles.resetToDefaults();
+  }
+
+  assignAdminRole(userId: string, adminRoleId: string | null) {
+    return this.adminRoles.assignRole(userId, adminRoleId ?? null);
+  }
+
+  getMyAdminPermissions(userId: string) {
+    return this.adminRoles.getEffectivePermissions(userId);
+  }
+
+  listAdminAccounts() {
+    return this.adminRoles.listAdminAccounts();
   }
 
   private formatStaffUser(user: { id: string; email: string | null; displayName: string | null; createdAt: Date; isActive: boolean; staffBrandAssignments?: { accessLevel: StaffAccessLevel; brandProfile: { id: string; companyName: string; logoUrl: string | null } }[] }) {
