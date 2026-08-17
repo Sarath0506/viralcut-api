@@ -21,6 +21,11 @@ export class PushNotificationService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Always false until a real FCM/APNs provider is wired in sendToTokens(). */
+  isConfigured(): boolean {
+    return false;
+  }
+
   async sendToUser(userId: string, payload: PushPayload): Promise<void> {
     const tokens = await this.prisma.deviceToken.findMany({
       where: { userId },
@@ -28,6 +33,27 @@ export class PushNotificationService {
     });
     if (tokens.length === 0) return;
     await this.sendToTokens(tokens, payload);
+  }
+
+  /** Like sendToUser, but reports whether delivery actually happened —
+   * used by bulk sends that need accurate sent/failed counts rather than
+   * the fire-and-forget behavior sendToUser's callers rely on elsewhere. */
+  async sendToUserWithResult(
+    userId: string,
+    payload: PushPayload,
+  ): Promise<{ delivered: boolean; reason?: string }> {
+    if (!this.isConfigured()) {
+      return { delivered: false, reason: "Push not configured" };
+    }
+    const tokens = await this.prisma.deviceToken.findMany({
+      where: { userId },
+      select: { token: true, platform: true },
+    });
+    if (tokens.length === 0) {
+      return { delivered: false, reason: "No registered device" };
+    }
+    await this.sendToTokens(tokens, payload);
+    return { delivered: true };
   }
 
   private async sendToTokens(

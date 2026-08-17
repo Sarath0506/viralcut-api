@@ -17,6 +17,17 @@ export class WhatsappService {
     );
   }
 
+  /** True once a Meta-approved general-purpose template is configured —
+   * separate from isConfigured() because the OTP template being approved
+   * doesn't mean a broadcast/marketing template has been. */
+  isGeneralTemplateConfigured(): boolean {
+    return Boolean(
+      this.config.get("WHATSAPP_ACCESS_TOKEN") &&
+        this.config.get("WHATSAPP_PHONE_NUMBER_ID") &&
+        this.config.get("WHATSAPP_GENERAL_TEMPLATE_NAME"),
+    );
+  }
+
   private shouldLogOtpInConsole(): boolean {
     return (
       this.config.get("NODE_ENV") === "development" &&
@@ -50,6 +61,59 @@ export class WhatsappService {
         return;
       }
       throw new Error("Failed to send OTP via WhatsApp");
+    }
+  }
+
+  /** Sends the approved general-update template to one recipient. Throws if
+   * not configured or on delivery failure — callers doing a bulk send
+   * should catch per-recipient to keep tallying sent/failed counts. */
+  async sendGeneralUpdate(
+    phone: string,
+    params: { recipientName: string; title: string; message: string },
+  ): Promise<void> {
+    if (!this.isGeneralTemplateConfigured()) {
+      throw new Error("WhatsApp general template not configured");
+    }
+
+    const version = this.config.get("WHATSAPP_API_VERSION");
+    const phoneNumberId = this.config.get("WHATSAPP_PHONE_NUMBER_ID");
+    const token = this.config.get("WHATSAPP_ACCESS_TOKEN");
+    const template = this.config.get("WHATSAPP_GENERAL_TEMPLATE_NAME");
+    const language = this.config.get("WHATSAPP_GENERAL_TEMPLATE_LANGUAGE");
+
+    const url = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+    const body = {
+      messaging_product: "whatsapp",
+      to: phone.replace("+", ""),
+      type: "template",
+      template: {
+        name: template,
+        language: { code: language },
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: params.recipientName },
+              { type: "text", text: params.title },
+              { type: "text", text: params.message },
+            ],
+          },
+        ],
+      },
+    };
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`${response.status} ${text}`);
     }
   }
 

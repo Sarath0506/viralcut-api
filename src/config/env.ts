@@ -35,6 +35,12 @@ const envSchema = z.object({
     .string()
     .default("true")
     .transform((v) => v === "true" || v === "1"),
+  /** Approved Meta template for admin bulk broadcasts, e.g. "mutiny_general_update".
+   * Unset until a general-purpose template is approved — bulk WhatsApp sends
+   * report as not-configured until then. Expected body params: {{1}} recipient
+   * name, {{2}} title, {{3}} message. */
+  WHATSAPP_GENERAL_TEMPLATE_NAME: z.string().optional(),
+  WHATSAPP_GENERAL_TEMPLATE_LANGUAGE: z.string().default("en"),
   /** Resend HTTP API key (preferred on Railway; same `re_...` key as SMTP password). */
   RESEND_API_KEY: z.string().optional(),
   SMTP_HOST: z.string().optional(),

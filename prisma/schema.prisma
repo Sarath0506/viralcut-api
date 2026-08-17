@@ -233,6 +233,8 @@ model User {
 
   supportTickets SupportTicket[]
 
+  bulkNotificationsSent BulkNotificationLog[]
+
   @@map("users")
 }
 
@@ -1075,4 +1077,37 @@ model SocialAccountInsightSnapshot {
   @@index([creatorProfileId, platform, collectedAt])
   @@index([platform, collectedAt])
   @@map("social_account_insight_snapshots")
+}
+
+model BulkNotificationLog {
+  id String @id @default(cuid())
+
+  title String
+
+  message String @db.Text
+
+  usedPush Boolean @default(false) @map("used_push")
+
+  usedWhatsapp Boolean @default(false) @map("used_whatsapp")
+
+  recipientIds String[] @map("recipient_ids")
+
+  recipientCount Int @map("recipient_count")
+
+  pushSentCount Int @default(0) @map("push_sent_count")
+
+  pushFailedCount Int @default(0) @map("push_failed_count")
+
+  whatsappSentCount Int @default(0) @map("whatsapp_sent_count")
+
+  whatsappFailedCount Int @default(0) @map("whatsapp_failed_count")
+
+  sentByUserId String @map("sent_by_user_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sentBy User @relation(fields: [sentByUserId], references: [id])
+
+  @@index([createdAt])
+  @@map("bulk_notification_logs")
 }

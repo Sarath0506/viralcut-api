@@ -26,6 +26,7 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { ListCampaignsQueryDto } from "../campaigns/dto/list-campaigns-query.dto";
 import { ObjectStorageService } from "../storage/object-storage.service";
+import { SendBulkNotificationDto } from "../notifications/dto/bulk-notification.dto";
 import { RespondSupportTicketDto } from "../support/dto/support.dto";
 import { AdminService } from "./admin.service";
 
@@ -199,6 +200,27 @@ export class AdminController {
   @Post("support-tickets/:id/respond")
   respondToSupportTicket(@Param("id") id: string, @Body() body: RespondSupportTicketDto) {
     return this.admin.respondToSupportTicket(id, body.action, body.note);
+  }
+
+  @Get("bulk-notifications/channel-status")
+  bulkNotificationChannelStatus() {
+    return this.admin.bulkNotificationChannelStatus();
+  }
+
+  @Post("bulk-notifications")
+  sendBulkNotification(
+    @CurrentUser() user: AuthJwtPayload,
+    @Body() body: SendBulkNotificationDto,
+  ) {
+    return this.admin.sendBulkNotification(user.sub, body);
+  }
+
+  @Get("bulk-notifications")
+  listBulkNotificationHistory(@Query("page") page?: string, @Query("limit") limit?: string) {
+    return this.admin.listBulkNotificationHistory(
+      page ? Number(page) : undefined,
+      limit ? Number(limit) : undefined,
+    );
   }
 
   @Get("campaigns")
