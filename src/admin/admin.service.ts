@@ -6,6 +6,7 @@ import { ActivityLogService } from "../activity/activity-log.service";
 import { computeEstimatedPaise } from "../common/earnings";
 import { PrismaService } from "../prisma/prisma.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
+import { FaqsService } from "../faqs/faqs.service";
 import { BulkNotificationService } from "../notifications/bulk-notification.service";
 import { EmailService } from "../notifications/email.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
@@ -41,6 +42,7 @@ export class AdminService {
     private readonly realtime: RealtimeService,
     private readonly support: SupportService,
     private readonly bulkNotifications: BulkNotificationService,
+    private readonly faqs: FaqsService,
   ) {}
 
   async listBrands() {
@@ -691,6 +693,26 @@ export class AdminService {
 
   listBulkNotificationHistory(page?: number, limit?: number) {
     return this.bulkNotifications.listHistory(page, limit);
+  }
+
+  listAllFaqs() {
+    return this.faqs.listAll();
+  }
+
+  createFaq(dto: { question: string; answer: string; isVisible?: boolean }) {
+    return this.faqs.create(dto);
+  }
+
+  updateFaq(id: string, dto: { question?: string; answer?: string; isVisible?: boolean }) {
+    return this.faqs.update(id, dto);
+  }
+
+  deleteFaq(id: string) {
+    return this.faqs.remove(id);
+  }
+
+  reorderFaqs(orderedIds: string[]) {
+    return this.faqs.reorder(orderedIds);
   }
 
   private formatStaffUser(user: { id: string; email: string | null; displayName: string | null; createdAt: Date; isActive: boolean; staffBrandAssignments?: { accessLevel: StaffAccessLevel; brandProfile: { id: string; companyName: string; logoUrl: string | null } }[] }) {

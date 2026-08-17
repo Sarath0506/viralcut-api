@@ -26,6 +26,7 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { ListCampaignsQueryDto } from "../campaigns/dto/list-campaigns-query.dto";
 import { ObjectStorageService } from "../storage/object-storage.service";
+import { CreateFaqDto, ReorderFaqsDto, UpdateFaqDto } from "../faqs/dto/faq.dto";
 import { SendBulkNotificationDto } from "../notifications/dto/bulk-notification.dto";
 import { RespondSupportTicketDto } from "../support/dto/support.dto";
 import { AdminService } from "./admin.service";
@@ -221,6 +222,31 @@ export class AdminController {
       page ? Number(page) : undefined,
       limit ? Number(limit) : undefined,
     );
+  }
+
+  @Get("faqs")
+  listFaqs() {
+    return this.admin.listAllFaqs();
+  }
+
+  @Post("faqs")
+  createFaq(@Body() body: CreateFaqDto) {
+    return this.admin.createFaq(body);
+  }
+
+  @Patch("faqs/reorder")
+  reorderFaqs(@Body() body: ReorderFaqsDto) {
+    return this.admin.reorderFaqs(body.orderedIds);
+  }
+
+  @Patch("faqs/:id")
+  updateFaq(@Param("id") id: string, @Body() body: UpdateFaqDto) {
+    return this.admin.updateFaq(id, body);
+  }
+
+  @Delete("faqs/:id")
+  deleteFaq(@Param("id") id: string) {
+    return this.admin.deleteFaq(id);
   }
 
   @Get("campaigns")

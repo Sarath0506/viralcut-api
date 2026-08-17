@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 
 import { AuthModule } from "../auth/auth.module";
 import { CampaignsModule } from "../campaigns/campaigns.module";
+import { FaqsModule } from "../faqs/faqs.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { RealtimeModule } from "../realtime/realtime.module";
 import { StorageModule } from "../storage/storage.module";
@@ -11,7 +12,16 @@ import { AdminController } from "./admin.controller";
 import { AdminService } from "./admin.service";
 
 @Module({
-  imports: [AuthModule, CampaignsModule, NotificationsModule, RealtimeModule, StorageModule, SupportModule, WalletModule],
+  imports: [
+    AuthModule,
+    CampaignsModule,
+    FaqsModule,
+    NotificationsModule,
+    RealtimeModule,
+    StorageModule,
+    SupportModule,
+    WalletModule,
+  ],
   controllers: [AdminController],
   providers: [AdminService],
 })
