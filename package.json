@@ -19,6 +19,7 @@
     "prisma:migrate:resolve": "prisma migrate resolve",
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
+    "seed:management-admin": "tsx prisma/seed-management-admin.ts",
     "test": "vitest run"
   },
   "dependencies": {
