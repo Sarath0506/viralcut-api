@@ -33,6 +33,7 @@ import {
   UpdateCampaignStepDto,
 } from "./dto/campaign.dto";
 import { ListCampaignsQueryDto } from "./dto/list-campaigns-query.dto";
+import { assertVideoIsPlayable, UnsupportedVideoFormatError } from "./video-compatibility";
 
 @ApiTags("campaigns")
 @ApiBearerAuth()
@@ -85,6 +86,18 @@ export class CampaignsController {
       throw new BadRequestException("File is required");
     }
     const type = file.mimetype.startsWith("image/") ? "image" : "video";
+
+    if (type === "video") {
+      try {
+        await assertVideoIsPlayable(file.buffer);
+      } catch (e) {
+        if (e instanceof UnsupportedVideoFormatError) {
+          throw new BadRequestException(e.message);
+        }
+        throw e;
+      }
+    }
+
     return {
       ...(await this.storage.saveUploadedFile("reference-assets", file)),
       type,
