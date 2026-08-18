@@ -94,6 +94,11 @@ const envSchema = z.object({
     ),
   YOUTUBE_TOKEN_ENCRYPTION_KEY: z.string().optional(),
   PAYOUT_ACCOUNT_ENCRYPTION_KEY: z.string().optional(),
+  /** Firebase Admin SDK service account JSON, base64-encoded (one line —
+   * Firebase Console > Project Settings > Service Accounts > Generate new
+   * private key, then `base64 -i key.json`). Unset = push notifications
+   * report as not-configured and only log what would be sent. */
+  FIREBASE_SERVICE_ACCOUNT_BASE64: z.string().optional(),
 }).superRefine((data, ctx) => {
   const r2Fields = [
     ["S3_ENDPOINT", data.S3_ENDPOINT],
