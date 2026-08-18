@@ -1,14 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const sendEachForMulticast = vi.fn();
-const initializeApp = vi.fn(() => ({ name: "push-notifications" }));
+const initializeApp = vi.fn((_config?: unknown, _name?: string) => ({ name: "push-notifications" }));
 const deleteApp = vi.fn();
 const cert = vi.fn((v: unknown) => v);
 
 vi.mock("firebase-admin/app", () => ({
-  initializeApp: (...args: unknown[]) => initializeApp(...args),
-  deleteApp: (...args: unknown[]) => deleteApp(...args),
-  cert: (...args: unknown[]) => cert(...args),
+  initializeApp: (config: unknown, name?: string) => initializeApp(config, name),
+  deleteApp: (app: unknown) => deleteApp(app),
+  cert: (v: unknown) => cert(v),
 }));
 
 vi.mock("firebase-admin/messaging", () => ({
