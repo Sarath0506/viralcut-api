@@ -1,5 +1,9 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { cert, deleteApp, initializeApp, type App } from "firebase-admin/app";
+import { getMessaging, type MulticastMessage } from "firebase-admin/messaging";
 
+import type { Env } from "../config/env";
 import { PrismaService } from "../prisma/prisma.service";
 
 type PushPayload = {
@@ -8,22 +12,27 @@ type PushPayload = {
   data?: Record<string, string>;
 };
 
-/**
- * Push delivery is not wired to a real provider yet — sending requires a
- * Firebase project (Android + iOS) and an APNs key, which must come from
- * the account owner. Until then this only logs what *would* be sent, so
- * every notification path is already push-ready: swap sendToTokens() for a
- * real FCM/APNs call and no other code needs to change.
- */
+/** FCM error codes that mean the token is permanently dead and should be
+ * dropped rather than retried — anything else (rate limits, transient
+ * server errors) is left alone so a future send can retry it. */
+const DEAD_TOKEN_ERROR_CODES = new Set([
+  "messaging/registration-token-not-registered",
+  "messaging/invalid-registration-token",
+  "messaging/invalid-argument",
+]);
+
 @Injectable()
-export class PushNotificationService {
+export class PushNotificationService implements OnModuleDestroy {
   private readonly logger = new Logger(PushNotificationService.name);
+  private app: App | null | undefined; // undefined = not attempted yet, null = attempted and failed/unconfigured
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly config: ConfigService<Env, true>,
+    private readonly prisma: PrismaService,
+  ) {}
 
-  /** Always false until a real FCM/APNs provider is wired in sendToTokens(). */
   isConfigured(): boolean {
-    return false;
+    return this.getApp() !== null;
   }
 
   async sendToUser(userId: string, payload: PushPayload): Promise<void> {
@@ -52,19 +61,49 @@ export class PushNotificationService {
     if (tokens.length === 0) {
       return { delivered: false, reason: "No registered device" };
     }
-    await this.sendToTokens(tokens, payload);
+    const { successCount } = await this.sendToTokens(tokens, payload);
+    if (successCount === 0) {
+      return { delivered: false, reason: "Delivery failed for all devices" };
+    }
     return { delivered: true };
   }
 
   private async sendToTokens(
     tokens: { token: string; platform: string }[],
     payload: PushPayload,
-  ): Promise<void> {
-    this.logger.log(
-      `[push:stub] Would send "${payload.title}" to ${tokens.length} device(s): ${tokens
-        .map((t) => `${t.platform}:${t.token.slice(0, 8)}…`)
-        .join(", ")}`,
-    );
+  ): Promise<{ successCount: number }> {
+    const app = this.getApp();
+    if (!app) {
+      this.logger.log(
+        `[push:stub] Would send "${payload.title}" to ${tokens.length} device(s): ${tokens
+          .map((t) => `${t.platform}:${t.token.slice(0, 8)}…`)
+          .join(", ")}`,
+      );
+      return { successCount: 0 };
+    }
+
+    const message: MulticastMessage = {
+      tokens: tokens.map((t) => t.token),
+      notification: { title: payload.title, body: payload.body },
+      data: payload.data,
+    };
+
+    const response = await getMessaging(app).sendEachForMulticast(message);
+
+    const deadTokens: string[] = [];
+    response.responses.forEach((result, i) => {
+      if (result.success) return;
+      const code = result.error?.code;
+      this.logger.warn(`[push] delivery failed for ${tokens[i].platform} token: ${code} — ${result.error?.message}`);
+      if (code && DEAD_TOKEN_ERROR_CODES.has(code)) {
+        deadTokens.push(tokens[i].token);
+      }
+    });
+    if (deadTokens.length > 0) {
+      await this.prisma.deviceToken.deleteMany({ where: { token: { in: deadTokens } } });
+    }
+
+    return { successCount: response.successCount };
   }
 
   async registerToken(userId: string, token: string, platform: string): Promise<void> {
@@ -77,5 +116,37 @@ export class PushNotificationService {
 
   async unregisterToken(token: string): Promise<void> {
     await this.prisma.deviceToken.deleteMany({ where: { token } });
+  }
+
+  /** Lazily initializes the Firebase Admin app from
+   * FIREBASE_SERVICE_ACCOUNT_BASE64. Returns null (and stays null — no
+   * retry per request) if unset or invalid, so every call site can treat
+   * "no app" as "push isn't configured" without its own try/catch. */
+  private getApp(): App | null {
+    if (this.app !== undefined) return this.app;
+
+    const encoded = this.config.get("FIREBASE_SERVICE_ACCOUNT_BASE64");
+    if (!encoded) {
+      this.app = null;
+      return this.app;
+    }
+
+    try {
+      const serviceAccount = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+      this.app = initializeApp(
+        { credential: cert(serviceAccount) },
+        "push-notifications",
+      );
+    } catch (e) {
+      this.logger.error(`Failed to initialize Firebase Admin from FIREBASE_SERVICE_ACCOUNT_BASE64: ${e}`);
+      this.app = null;
+    }
+    return this.app;
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.app) {
+      await deleteApp(this.app);
+    }
   }
 }
