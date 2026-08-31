@@ -38,6 +38,14 @@ enum CampaignStatus {
   closed
 }
 
+enum NewClipperIntakeStatus {
+  open
+
+  closed_at_threshold
+
+  manually_extended
+}
+
 enum CampaignWizardStep {
   basics
 
@@ -539,6 +547,14 @@ model Campaign {
   budgetPaise Int @map("budget_paise")
 
   budgetUsedPaise Int @default(0) @map("budget_used_paise")
+
+  newClipperIntakeStatus NewClipperIntakeStatus @default(open) @map("new_clipper_intake_status")
+
+  extraClipperAllowance Int? @map("extra_clipper_allowance")
+
+  allowExcessViewsToFillPool Boolean @default(false) @map("allow_excess_views_to_fill_pool")
+
+  poolThresholdBps Int @default(8000) @map("pool_threshold_bps")
 
   startDate DateTime? @map("start_date")
 
