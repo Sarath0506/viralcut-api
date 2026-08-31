@@ -15,7 +15,7 @@ import {
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { StaffAccessLevel, SupportTicketStatus, UserRole } from "@prisma/client";
-import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from "class-validator";
+import { IsBoolean, IsEmail, IsEnum, IsInt, IsOptional, IsString, Min, MinLength } from "class-validator";
 import { memoryStorage } from "multer";
 
 import { CampaignInviteService } from "../auth/campaign-invite.service";
@@ -122,6 +122,17 @@ class AssignBrandDto {
   @IsOptional()
   @IsEnum(StaffAccessLevel)
   accessLevel?: StaffAccessLevel;
+}
+
+class SetClipperIntakeDto {
+  @IsInt()
+  @Min(0)
+  extraClipperAllowance!: number;
+}
+
+class SetPoolOverflowDto {
+  @IsBoolean()
+  allowExcessViewsToFillPool!: boolean;
 }
 
 @ApiTags("admin")
@@ -443,5 +454,23 @@ export class AdminController {
     @Param("creatorId") creatorId: string,
   ) {
     return this.admin.payoutCampaign(campaignId, creatorId);
+  }
+
+  @Patch("campaigns/:id/clipper-intake")
+  @AdminSectionRoute("campaigns")
+  setClipperIntake(
+    @Param("id") campaignId: string,
+    @Body() dto: SetClipperIntakeDto,
+  ) {
+    return this.admin.setCampaignClipperIntake(campaignId, dto.extraClipperAllowance);
+  }
+
+  @Patch("campaigns/:id/pool-overflow")
+  @AdminSectionRoute("campaigns")
+  setPoolOverflow(
+    @Param("id") campaignId: string,
+    @Body() dto: SetPoolOverflowDto,
+  ) {
+    return this.admin.setCampaignPoolOverflow(campaignId, dto.allowExcessViewsToFillPool);
   }
 }

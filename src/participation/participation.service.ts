@@ -7,6 +7,7 @@ import {
 import {
   CampaignStatus,
   FormatDeliverableStatus,
+  NewClipperIntakeStatus,
   Prisma,
   UserRole,
 } from "@prisma/client";
@@ -264,6 +265,38 @@ export class ParticipationService {
         message: "This profile already joined this campaign",
         details: { participation: this.formatParticipation(existing) },
       });
+    }
+
+    if (campaign.newClipperIntakeStatus === NewClipperIntakeStatus.closed_at_threshold) {
+      throw new BadRequestException({
+        code: "INTAKE_CLOSED",
+        message: "This campaign's budget pool is nearly full and isn't accepting new clippers right now.",
+      });
+    }
+
+    if (campaign.newClipperIntakeStatus === NewClipperIntakeStatus.manually_extended) {
+      // Atomic: only succeeds if the allowance is still > 0, so two creators
+      // joining at the same instant can't both consume the last slot.
+      const consumed = await this.prisma.campaign.updateMany({
+        where: { id: campaignId, extraClipperAllowance: { gt: 0 } },
+        data: { extraClipperAllowance: { decrement: 1 } },
+      });
+      if (consumed.count === 0) {
+        throw new BadRequestException({
+          code: "INTAKE_CLOSED",
+          message: "This campaign's budget pool is nearly full and isn't accepting new clippers right now.",
+        });
+      }
+      const remaining = await this.prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { extraClipperAllowance: true },
+      });
+      if ((remaining?.extraClipperAllowance ?? 0) <= 0) {
+        await this.prisma.campaign.update({
+          where: { id: campaignId },
+          data: { newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold },
+        });
+      }
     }
 
     const platforms = normalizeCampaignPlatforms(
@@ -1161,15 +1194,17 @@ export class ParticipationService {
       },
     });
 
-    // Auto-pause if the campaign budget pool is now full; emit update either way
-    // so brand portal pool bars refresh in real time after every view sync.
-    const wasPaused = await this._autoPauseCampaignIfPoolFull(deliverable.participation.campaign);
-    if (!wasPaused) {
-      this.realtime.emitCampaignUpdated({
-        id: deliverable.participation.campaign.id,
-        brandProfileId: deliverable.participation.campaign.brandProfileId,
-      });
-    }
+    // Re-evaluate the pool: close intake at the 80% threshold, auto-pause at
+    // 100%. Emit exactly one campaign:updated either way so brand portal
+    // pool bars and intake-status badges refresh live after every view sync.
+    const poolState = await this._evaluateCampaignPoolThresholds(deliverable.participation.campaign);
+    this.realtime.emitCampaignUpdated({
+      id: deliverable.participation.campaign.id,
+      brandProfileId: deliverable.participation.campaign.brandProfileId,
+      ...(poolState.paused ? { status: CampaignStatus.paused } : {}),
+      newClipperIntakeStatus: poolState.newClipperIntakeStatus,
+      poolUtilizationBps: poolState.utilizationBps,
+    });
 
     // Analytics above are always the real, uncapped numbers from Apify.
     // payoutCapped tells the client this deliverable's *earnings* have hit
@@ -1195,29 +1230,52 @@ export class ParticipationService {
     };
   }
 
-  private async _autoPauseCampaignIfPoolFull(campaign: {
+  /** Re-checks a live campaign's pool usage against its 80% intake threshold
+   * and its 100% budget ceiling, applying whichever state changes now apply.
+   * Does not emit realtime events itself — callers that already need to emit
+   * an update (e.g. after a view refresh) build one payload from the result
+   * instead of this firing a second, separate event. */
+  private async _evaluateCampaignPoolThresholds(campaign: {
     id: string;
     status: CampaignStatus;
     budgetPaise: number;
     brandProfileId: string | null;
-  }): Promise<boolean> {
-    if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) return false;
+    newClipperIntakeStatus: NewClipperIntakeStatus;
+    poolThresholdBps: number;
+  }): Promise<{
+    paused: boolean;
+    newClipperIntakeStatus: NewClipperIntakeStatus;
+    utilizationBps: number;
+  }> {
+    if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) {
+      return { paused: false, newClipperIntakeStatus: campaign.newClipperIntakeStatus, utilizationBps: 0 };
+    }
 
     const budgetUsed = await getCampaignPoolUsage(this.prisma, campaign.id);
-    if (budgetUsed < campaign.budgetPaise) return false;
+    const utilizationBps = Math.min(10000, Math.floor((budgetUsed / campaign.budgetPaise) * 10000));
+
+    let newClipperIntakeStatus = campaign.newClipperIntakeStatus;
+    if (
+      newClipperIntakeStatus === NewClipperIntakeStatus.open &&
+      utilizationBps >= campaign.poolThresholdBps
+    ) {
+      newClipperIntakeStatus = NewClipperIntakeStatus.closed_at_threshold;
+      await this.prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { newClipperIntakeStatus },
+      });
+    }
+
+    if (budgetUsed < campaign.budgetPaise) {
+      return { paused: false, newClipperIntakeStatus, utilizationBps };
+    }
 
     await this.prisma.campaign.update({
       where: { id: campaign.id },
       data: { status: CampaignStatus.paused },
     });
 
-    this.realtime.emitCampaignUpdated({
-      id: campaign.id,
-      status: CampaignStatus.paused,
-      brandProfileId: campaign.brandProfileId,
-    });
-
-    return true;
+    return { paused: true, newClipperIntakeStatus, utilizationBps };
   }
 
   async countPendingReviewsForBrand(

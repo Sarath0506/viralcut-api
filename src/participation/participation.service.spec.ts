@@ -6,6 +6,7 @@ import {
 import {
   CampaignStatus,
   FormatDeliverableStatus,
+  NewClipperIntakeStatus,
   UserRole,
 } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +16,7 @@ import { ReviewDeliverableAction } from "./dto/review-deliverable.dto";
 
 function makePrisma() {
   return {
-    campaign: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+    campaign: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
     campaignParticipation: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
@@ -200,6 +201,117 @@ describe("ParticipationService", () => {
       await expect(
         service.joinCampaign("creator-1", "camp-1", "profile-1"),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it("blocks joining when intake is closed_at_threshold", async () => {
+      prisma.campaign.findFirst.mockResolvedValue({
+        id: "camp-1",
+        status: CampaignStatus.live,
+        platforms: ["instagram_reel"],
+        platform: "instagram_reel",
+        newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold,
+      });
+      prisma.campaignParticipation.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.joinCampaign("creator-1", "camp-1", "profile-1"),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.campaignParticipation.create).not.toHaveBeenCalled();
+    });
+
+    it("allows joining under manually_extended and consumes one unit of the allowance", async () => {
+      prisma.campaign.findFirst.mockResolvedValue({
+        id: "camp-1",
+        status: CampaignStatus.live,
+        platforms: ["instagram_reel"],
+        platform: "instagram_reel",
+        newClipperIntakeStatus: NewClipperIntakeStatus.manually_extended,
+        extraClipperAllowance: 3,
+      });
+      prisma.campaignParticipation.findUnique.mockResolvedValue(null);
+      prisma.campaign.updateMany.mockResolvedValue({ count: 1 });
+      prisma.campaign.findUnique.mockResolvedValue({ extraClipperAllowance: 2 });
+      prisma.campaignParticipation.create.mockResolvedValue({
+        id: "part-1",
+        campaignId: "camp-1",
+        creatorId: "creator-1",
+        creatorProfileId: "profile-1",
+        platformsSnapshot: ["instagram_reel"],
+        joinedAt: new Date("2026-06-09"),
+        campaign: {
+          id: "camp-1", title: "Test", status: CampaignStatus.live,
+          platforms: ["instagram_reel"], platform: "instagram_reel",
+          ratePer1kPaise: 5000, maxPayoutPaise: 100000, brandProfile: null,
+        },
+        creatorProfile: { id: "profile-1", platform: "instagram", handle: "demo_creator", label: null, avatarUrl: null },
+        deliverables: [],
+      });
+
+      const result = await service.joinCampaign("creator-1", "camp-1", "profile-1");
+
+      expect(result.id).toBe("part-1");
+      expect(prisma.campaign.updateMany).toHaveBeenCalledWith({
+        where: { id: "camp-1", extraClipperAllowance: { gt: 0 } },
+        data: { extraClipperAllowance: { decrement: 1 } },
+      });
+      // Allowance still has 2 left after this join — intake stays manually_extended.
+      expect(prisma.campaign.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: { newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold } }),
+      );
+    });
+
+    it("closes intake again once the last manually_extended slot is used", async () => {
+      prisma.campaign.findFirst.mockResolvedValue({
+        id: "camp-1",
+        status: CampaignStatus.live,
+        platforms: ["instagram_reel"],
+        platform: "instagram_reel",
+        newClipperIntakeStatus: NewClipperIntakeStatus.manually_extended,
+        extraClipperAllowance: 1,
+      });
+      prisma.campaignParticipation.findUnique.mockResolvedValue(null);
+      prisma.campaign.updateMany.mockResolvedValue({ count: 1 });
+      prisma.campaign.findUnique.mockResolvedValue({ extraClipperAllowance: 0 });
+      prisma.campaignParticipation.create.mockResolvedValue({
+        id: "part-1",
+        campaignId: "camp-1",
+        creatorId: "creator-1",
+        creatorProfileId: "profile-1",
+        platformsSnapshot: ["instagram_reel"],
+        joinedAt: new Date("2026-06-09"),
+        campaign: {
+          id: "camp-1", title: "Test", status: CampaignStatus.live,
+          platforms: ["instagram_reel"], platform: "instagram_reel",
+          ratePer1kPaise: 5000, maxPayoutPaise: 100000, brandProfile: null,
+        },
+        creatorProfile: { id: "profile-1", platform: "instagram", handle: "demo_creator", label: null, avatarUrl: null },
+        deliverables: [],
+      });
+
+      await service.joinCampaign("creator-1", "camp-1", "profile-1");
+
+      expect(prisma.campaign.update).toHaveBeenCalledWith({
+        where: { id: "camp-1" },
+        data: { newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold },
+      });
+    });
+
+    it("blocks joining when the manually_extended allowance is already exhausted (race lost)", async () => {
+      prisma.campaign.findFirst.mockResolvedValue({
+        id: "camp-1",
+        status: CampaignStatus.live,
+        platforms: ["instagram_reel"],
+        platform: "instagram_reel",
+        newClipperIntakeStatus: NewClipperIntakeStatus.manually_extended,
+        extraClipperAllowance: 0,
+      });
+      prisma.campaignParticipation.findUnique.mockResolvedValue(null);
+      prisma.campaign.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.joinCampaign("creator-1", "camp-1", "profile-1"),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.campaignParticipation.create).not.toHaveBeenCalled();
     });
   });
 
@@ -397,6 +509,8 @@ describe("ParticipationService", () => {
             brandProfileId: "brand-1",
             ratePer1kPaise: 1_000,
             maxPayoutPaise: 50_000,
+            newClipperIntakeStatus: NewClipperIntakeStatus.open as NewClipperIntakeStatus,
+            poolThresholdBps: 8000,
           },
         },
       };
@@ -431,6 +545,77 @@ describe("ParticipationService", () => {
       expect(result.payoutCapped).toBe(true);
       // Analytics themselves are never capped — the real view count is what was written.
       expect(result.viewCount).toBe(500_000);
+    });
+
+    it("closes intake at 80% pool utilization without pausing the campaign", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
+      apify.getViewCount.mockResolvedValue({
+        viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0,
+      });
+      // Pool is at 85% of the 1_000_000 paise budget — above the 8000bps (80%) threshold, below 100%.
+      prisma.$queryRaw.mockResolvedValue([{ total: 850_000n }]);
+
+      await service.refreshDeliverableViews("creator-1", "d1");
+
+      expect(prisma.campaign.update).toHaveBeenCalledWith({
+        where: { id: "camp-1" },
+        data: { newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold },
+      });
+      expect(prisma.campaign.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: CampaignStatus.paused }) }),
+      );
+      expect(realtime.emitCampaignUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "camp-1",
+          newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold,
+          poolUtilizationBps: 8500,
+        }),
+      );
+    });
+
+    it("does not re-close intake if it was already manually_extended", async () => {
+      const deliverable = mockDeliverable();
+      deliverable.participation.campaign.newClipperIntakeStatus = NewClipperIntakeStatus.manually_extended;
+      prisma.formatDeliverable.findUnique.mockResolvedValue(deliverable);
+      apify.getViewCount.mockResolvedValue({
+        viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0,
+      });
+      prisma.$queryRaw.mockResolvedValue([{ total: 850_000n }]);
+
+      await service.refreshDeliverableViews("creator-1", "d1");
+
+      // Only the open -> closed_at_threshold transition is automatic; an
+      // admin-extended campaign shouldn't be silently overridden by it.
+      expect(prisma.campaign.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: { newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold } }),
+      );
+    });
+
+    it("still auto-pauses at 100% and reports paused status in the realtime payload", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
+      apify.getViewCount.mockResolvedValue({
+        viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0,
+      });
+      prisma.$queryRaw.mockResolvedValue([{ total: 1_000_000n }]);
+
+      await service.refreshDeliverableViews("creator-1", "d1");
+
+      expect(prisma.campaign.update).toHaveBeenCalledWith({
+        where: { id: "camp-1" },
+        data: { status: CampaignStatus.paused },
+      });
+      expect(realtime.emitCampaignUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "camp-1", status: CampaignStatus.paused, poolUtilizationBps: 10000 }),
+      );
     });
   });
 
