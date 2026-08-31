@@ -1171,6 +1171,19 @@ export class ParticipationService {
       });
     }
 
+    // Analytics above are always the real, uncapped numbers from Apify.
+    // payoutCapped tells the client this deliverable's *earnings* have hit
+    // its maxPayoutPaise ceiling even though views keep climbing — so the UI
+    // can show "earnings capped, views still growing" instead of implying a
+    // rising ₹ figure that isn't actually rising anymore.
+    const campaign = deliverable.participation.campaign;
+    const cappedEstimatePaise = computeEstimatedPaise(
+      updated.viewCount,
+      campaign.ratePer1kPaise,
+      campaign.maxPayoutPaise,
+    );
+    const payoutCapped = cappedEstimatePaise >= campaign.maxPayoutPaise;
+
     return {
       id:           updated.id,
       viewCount:    updated.viewCount,
@@ -1178,6 +1191,7 @@ export class ParticipationService {
       likeCount:    updated.likeCount,
       commentCount: updated.commentCount,
       shareCount:   updated.shareCount,
+      payoutCapped,
     };
   }
 

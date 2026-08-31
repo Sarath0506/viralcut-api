@@ -291,12 +291,16 @@ export class AdminService {
           where: { id: t.participationId },
           include: {
             creator: { select: { id: true, displayName: true } },
-            campaign: { select: { ratePer1kPaise: true } },
+            campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
           },
         });
         const views = t._sum?.viewCount ?? 0;
         const earned = participation
-          ? Math.round((views / 1000) * participation.campaign.ratePer1kPaise)
+          ? computeEstimatedPaise(
+              views,
+              participation.campaign.ratePer1kPaise,
+              participation.campaign.maxPayoutPaise,
+            )
           : 0;
         return {
           creatorId: participation?.creator.id ?? "",

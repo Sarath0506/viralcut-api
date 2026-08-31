@@ -15,7 +15,7 @@ import { ReviewDeliverableAction } from "./dto/review-deliverable.dto";
 
 function makePrisma() {
   return {
-    campaign: { findFirst: vi.fn(), findUnique: vi.fn() },
+    campaign: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
     campaignParticipation: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
@@ -24,6 +24,7 @@ function makePrisma() {
     },
     formatDeliverable: {
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
       findMany: vi.fn(),
       update: vi.fn(),
       count: vi.fn(),
@@ -33,6 +34,7 @@ function makePrisma() {
       create: vi.fn(),
     },
     $transaction: vi.fn(),
+    $queryRaw: vi.fn().mockResolvedValue([{ total: 0n }]),
   };
 }
 
@@ -49,6 +51,7 @@ function makeRealtime() {
     emitDeliverableSubmitted: vi.fn(),
     emitDeliverableReviewed: vi.fn(),
     emitDeliverableLiveProof: vi.fn(),
+    emitCampaignUpdated: vi.fn(),
   };
 }
 
@@ -63,6 +66,7 @@ describe("ParticipationService", () => {
   let campaignAccess: ReturnType<typeof makeCampaignAccess>;
   let realtime: ReturnType<typeof makeRealtime>;
   let creatorProfiles: ReturnType<typeof makeCreatorProfiles>;
+  let apify: { getViewCount: ReturnType<typeof vi.fn> };
   let service: ParticipationService;
 
   beforeEach(() => {
@@ -70,11 +74,12 @@ describe("ParticipationService", () => {
     campaignAccess = makeCampaignAccess();
     realtime = makeRealtime();
     creatorProfiles = makeCreatorProfiles();
+    apify = { getViewCount: vi.fn().mockResolvedValue({ viewCount: 0, platform: "unknown" }) };
     service = new ParticipationService(
       prisma as never,
       campaignAccess as never,
       realtime as never,
-      { getViewCount: async () => ({ viewCount: 0, platform: "unknown" }) } as never,
+      apify as never,
       { log: async () => undefined } as never,
       { create: async () => undefined } as never,
       creatorProfiles as never,
@@ -373,6 +378,59 @@ describe("ParticipationService", () => {
       });
 
       expect(result.status).toBe(FormatDeliverableStatus.live_submitted);
+    });
+  });
+
+  describe("refreshDeliverableViews", () => {
+    function mockDeliverable(overrides: Partial<{ viewCount: number }> = {}) {
+      const base = {
+        id: "d1",
+        creatorId: undefined as unknown, // set per-call below
+        status: FormatDeliverableStatus.live_submitted,
+        livePostUrl: "https://instagram.com/reel/1",
+        participation: {
+          creatorId: "creator-1",
+          campaign: {
+            id: "camp-1",
+            status: CampaignStatus.live,
+            budgetPaise: 1_000_000,
+            brandProfileId: "brand-1",
+            ratePer1kPaise: 1_000,
+            maxPayoutPaise: 50_000,
+          },
+        },
+      };
+      return { ...base, ...overrides };
+    }
+
+    it("reports payoutCapped: false when the estimate is under maxPayoutPaise", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
+      apify.getViewCount.mockResolvedValue({
+        viewCount: 10_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 10_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0,
+      });
+
+      // 10_000 views * 1_000 paise/1k = 10_000 paise, well under the 50_000 cap.
+      const result = await service.refreshDeliverableViews("creator-1", "d1");
+      expect(result.payoutCapped).toBe(false);
+    });
+
+    it("reports payoutCapped: true once the estimate reaches maxPayoutPaise, even though views keep climbing", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
+      apify.getViewCount.mockResolvedValue({
+        viewCount: 500_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 500_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0,
+      });
+
+      // 500_000 views * 1_000 paise/1k = 500_000 paise, far past the 50_000 cap.
+      const result = await service.refreshDeliverableViews("creator-1", "d1");
+      expect(result.payoutCapped).toBe(true);
+      // Analytics themselves are never capped — the real view count is what was written.
+      expect(result.viewCount).toBe(500_000);
     });
   });
 
