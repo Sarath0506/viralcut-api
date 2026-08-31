@@ -16,6 +16,7 @@ import {
 
 import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
+import { getCampaignPoolUsageMap } from "../common/campaign-pool";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
 import {
@@ -34,29 +35,10 @@ export class CampaignsService {
     private readonly activityLog: ActivityLogService,
   ) {}
 
-  private async fetchBudgetUsedMap(campaignIds: string[]): Promise<Record<string, number>> {
-    if (!campaignIds.length) return {};
-    // Use COALESCE(paid_amount_paise, estimated) so paid takes priority once processed;
-    // fall back to view-count-derived estimate for campaigns with no payouts yet.
-    const rows = await this.prisma.$queryRaw<{ campaign_id: string; total: bigint }[]>`
-      SELECT
-        cp.campaign_id,
-        COALESCE(SUM(
-          COALESCE(
-            fd.paid_amount_paise,
-            LEAST(
-              FLOOR(fd.view_count::numeric * c.rate_per_1k_paise::numeric / 1000),
-              c.max_payout_paise::numeric
-            )
-          )
-        ), 0) AS total
-      FROM campaign_participations cp
-      JOIN format_deliverables fd ON fd.participation_id = cp.id
-      JOIN campaigns c ON c.id = cp.campaign_id
-      WHERE cp.campaign_id = ANY(${campaignIds}::text[])
-      GROUP BY cp.campaign_id
-    `;
-    return Object.fromEntries(rows.map((r) => [r.campaign_id, Number(r.total)]));
+  // Use COALESCE(paid_amount_paise, estimated) so paid takes priority once processed;
+  // fall back to view-count-derived estimate for campaigns with no payouts yet.
+  private fetchBudgetUsedMap(campaignIds: string[]): Promise<Record<string, number>> {
+    return getCampaignPoolUsageMap(this.prisma, campaignIds);
   }
 
   async listLiveForCreators() {

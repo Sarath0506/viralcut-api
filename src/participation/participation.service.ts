@@ -15,6 +15,7 @@ import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
 import { ApifyService } from "../common/apify.service";
+import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
 import { CreatorProfilesService } from "../creator-profiles/creator-profiles.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
@@ -1188,23 +1189,7 @@ export class ParticipationService {
   }): Promise<boolean> {
     if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) return false;
 
-    const rows = await this.prisma.$queryRaw<{ total: bigint }[]>`
-      SELECT COALESCE(SUM(
-        COALESCE(
-          fd.paid_amount_paise,
-          LEAST(
-            FLOOR(fd.view_count::numeric * c.rate_per_1k_paise::numeric / 1000),
-            c.max_payout_paise::numeric
-          )
-        )
-      ), 0) AS total
-      FROM campaign_participations cp
-      JOIN format_deliverables fd ON fd.participation_id = cp.id
-      JOIN campaigns c ON c.id = cp.campaign_id
-      WHERE cp.campaign_id = ${campaign.id}
-    `;
-
-    const budgetUsed = Number(rows[0]?.total ?? 0);
+    const budgetUsed = await getCampaignPoolUsage(this.prisma, campaign.id);
     if (budgetUsed < campaign.budgetPaise) return false;
 
     await this.prisma.campaign.update({
