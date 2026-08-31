@@ -267,14 +267,38 @@ export class ParticipationService {
       });
     }
 
-    if (campaign.newClipperIntakeStatus === NewClipperIntakeStatus.closed_at_threshold) {
+    // The stored intake status only flips reactively — normally when a
+    // deliverable's views get refreshed (see _evaluateCampaignPoolThresholds)
+    // — so a campaign that crossed the 80% pool threshold with no recent
+    // view refresh would still read "open" here and let new clippers in
+    // past the cutoff. Re-evaluate against live pool usage on every join
+    // attempt so the gate can't go stale.
+    const poolState = await this._evaluateCampaignPoolThresholds(campaign);
+    const intakeStatus = poolState.newClipperIntakeStatus;
+    if (intakeStatus !== campaign.newClipperIntakeStatus || poolState.paused) {
+      this.realtime.emitCampaignUpdated({
+        id: campaign.id,
+        brandProfileId: campaign.brandProfileId,
+        ...(poolState.paused ? { status: CampaignStatus.paused } : {}),
+        newClipperIntakeStatus: intakeStatus,
+        poolUtilizationBps: poolState.utilizationBps,
+      });
+    }
+    if (poolState.paused) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Campaign not available",
+      });
+    }
+
+    if (intakeStatus === NewClipperIntakeStatus.closed_at_threshold) {
       throw new BadRequestException({
         code: "INTAKE_CLOSED",
         message: "This campaign's budget pool is nearly full and isn't accepting new clippers right now.",
       });
     }
 
-    if (campaign.newClipperIntakeStatus === NewClipperIntakeStatus.manually_extended) {
+    if (intakeStatus === NewClipperIntakeStatus.manually_extended) {
       // Atomic: only succeeds if the allowance is still > 0, so two creators
       // joining at the same instant can't both consume the last slot.
       const consumed = await this.prisma.campaign.updateMany({

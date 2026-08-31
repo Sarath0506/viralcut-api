@@ -95,6 +95,8 @@ describe("ParticipationService", () => {
         platforms: ["instagram_reel", "youtube_shorts"],
         platform: "instagram_reel",
         brandProfileId: "brand-1",
+        budgetPaise: 10000000,
+        poolThresholdBps: 8000,
       });
       prisma.campaignParticipation.findUnique.mockResolvedValue(null);
       prisma.campaignParticipation.create.mockResolvedValue({
@@ -163,6 +165,8 @@ describe("ParticipationService", () => {
         status: CampaignStatus.live,
         platforms: ["instagram_reel"],
         platform: "instagram_reel",
+        budgetPaise: 10000000,
+        poolThresholdBps: 8000,
       });
       prisma.campaignParticipation.findUnique.mockResolvedValue({
         id: "part-existing",
@@ -210,6 +214,8 @@ describe("ParticipationService", () => {
         platforms: ["instagram_reel"],
         platform: "instagram_reel",
         newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold,
+        budgetPaise: 10000000,
+        poolThresholdBps: 8000,
       });
       prisma.campaignParticipation.findUnique.mockResolvedValue(null);
 
@@ -217,6 +223,40 @@ describe("ParticipationService", () => {
         service.joinCampaign("creator-1", "camp-1", "profile-1"),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.campaignParticipation.create).not.toHaveBeenCalled();
+    });
+
+    it("blocks joining once live pool usage crosses the threshold even if the stored status is still 'open'", async () => {
+      // The stored newClipperIntakeStatus only flips reactively (normally on
+      // a deliverable's view refresh) — a campaign whose pool crossed 80%
+      // with no recent view refresh would still read "open" here. The join
+      // path must re-check live usage rather than trust the stale field.
+      prisma.campaign.findFirst.mockResolvedValue({
+        id: "camp-1",
+        status: CampaignStatus.live,
+        platforms: ["instagram_reel"],
+        platform: "instagram_reel",
+        brandProfileId: "brand-1",
+        newClipperIntakeStatus: NewClipperIntakeStatus.open,
+        budgetPaise: 10000000,
+        poolThresholdBps: 8000,
+      });
+      prisma.campaignParticipation.findUnique.mockResolvedValue(null);
+      prisma.$queryRaw.mockResolvedValue([{ total: 8400000n }]); // 84% of budgetPaise
+
+      await expect(
+        service.joinCampaign("creator-1", "camp-1", "profile-1"),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.campaignParticipation.create).not.toHaveBeenCalled();
+      expect(prisma.campaign.update).toHaveBeenCalledWith({
+        where: { id: "camp-1" },
+        data: { newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold },
+      });
+      expect(realtime.emitCampaignUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "camp-1",
+          newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold,
+        }),
+      );
     });
 
     it("allows joining under manually_extended and consumes one unit of the allowance", async () => {
@@ -227,6 +267,8 @@ describe("ParticipationService", () => {
         platform: "instagram_reel",
         newClipperIntakeStatus: NewClipperIntakeStatus.manually_extended,
         extraClipperAllowance: 3,
+        budgetPaise: 10000000,
+        poolThresholdBps: 8000,
       });
       prisma.campaignParticipation.findUnique.mockResolvedValue(null);
       prisma.campaign.updateMany.mockResolvedValue({ count: 1 });
@@ -268,6 +310,8 @@ describe("ParticipationService", () => {
         platform: "instagram_reel",
         newClipperIntakeStatus: NewClipperIntakeStatus.manually_extended,
         extraClipperAllowance: 1,
+        budgetPaise: 10000000,
+        poolThresholdBps: 8000,
       });
       prisma.campaignParticipation.findUnique.mockResolvedValue(null);
       prisma.campaign.updateMany.mockResolvedValue({ count: 1 });
@@ -304,6 +348,8 @@ describe("ParticipationService", () => {
         platform: "instagram_reel",
         newClipperIntakeStatus: NewClipperIntakeStatus.manually_extended,
         extraClipperAllowance: 0,
+        budgetPaise: 10000000,
+        poolThresholdBps: 8000,
       });
       prisma.campaignParticipation.findUnique.mockResolvedValue(null);
       prisma.campaign.updateMany.mockResolvedValue({ count: 0 });
