@@ -66,7 +66,14 @@ export class WhatsappService {
 
   /** Sends the approved general-update template to one recipient. Throws if
    * not configured or on delivery failure — callers doing a bulk send
-   * should catch per-recipient to keep tallying sent/failed counts. */
+   * should catch per-recipient to keep tallying sent/failed counts.
+   *
+   * The approved template body is "Hi {{1}}, you have an update from
+   * Mutiny: {{2}} Open the app to view details." — only 2 variables, so
+   * title and message are combined into {{2}} rather than getting a slot
+   * each. Changing this requires re-submitting the template to Meta for
+   * re-approval, so match whatever the currently-approved template expects
+   * instead of assuming a fixed shape. */
   async sendGeneralUpdate(
     phone: string,
     params: { recipientName: string; title: string; message: string },
@@ -94,8 +101,7 @@ export class WhatsappService {
             type: "body",
             parameters: [
               { type: "text", text: params.recipientName },
-              { type: "text", text: params.title },
-              { type: "text", text: params.message },
+              { type: "text", text: `${params.title} — ${params.message}` },
             ],
           },
         ],
