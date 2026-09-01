@@ -259,6 +259,12 @@ export class AdminController {
     return this.admin.updateBrand(id, dto);
   }
 
+  @Delete("brands/:id")
+  @AdminSectionRoute("brands")
+  deleteBrand(@Param("id") id: string) {
+    return this.admin.deleteBrand(id);
+  }
+
   @Get("creators")
   @AdminSectionRoute("clippers")
   listCreators() {

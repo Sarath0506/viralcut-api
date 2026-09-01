@@ -50,6 +50,7 @@ export class AdminService {
 
   async listBrands() {
     const brands = await this.prisma.brandProfile.findMany({
+      where: { user: { isActive: true } },
       include: {
         user: { select: { id: true, email: true, displayName: true } },
         _count: { select: { campaigns: true } },
@@ -149,6 +150,56 @@ export class AdminService {
     });
 
     return this.getBrand(brandId);
+  }
+
+  /** Soft-deletes a brand — same pattern as a creator's own account deletion
+   * (see UsersService.deleteMe): deactivate + scrub PII rather than a hard
+   * delete, so campaign/payout history stays intact for any brand that has
+   * ever actually run one. Blocked entirely for a brand with any campaigns
+   * at all (including drafts) so this can't accidentally orphan real
+   * business data — those must be deleted or reassigned first. */
+  async deleteBrand(brandId: string) {
+    const existing = await this.prisma.brandProfile.findUnique({
+      where: { id: brandId },
+      select: { id: true, userId: true, _count: { select: { campaigns: true } } },
+    });
+    if (!existing) throw new NotFoundException({ code: "NOT_FOUND", message: "Brand not found" });
+    if (existing._count.campaigns > 0) {
+      throw new BadRequestException({
+        code: "HAS_CAMPAIGNS",
+        message: "This brand has existing campaigns and can't be deleted. Remove its campaigns first.",
+      });
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.updateMany({
+        where: { userId: existing.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+      this.prisma.user.update({
+        where: { id: existing.userId },
+        data: {
+          isActive: false,
+          email: null,
+          phone: null,
+          username: null,
+          displayName: `deleted_${existing.userId.slice(0, 8)}`,
+        },
+      }),
+      this.prisma.brandProfile.update({
+        where: { id: brandId },
+        data: {
+          companyName: "Deleted brand",
+          companyEmail: null,
+          logoUrl: null,
+          pocName: null,
+          pocPhone: null,
+          pocEmail: null,
+        },
+      }),
+    ]);
+
+    return { deleted: true };
   }
 
   async getBrand(brandId: string) {
