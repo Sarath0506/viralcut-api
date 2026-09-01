@@ -1,8 +1,9 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import { AdminPermissionLevel, AdminSection, CampaignInviteStatus, FormatDeliverableStatus, KycStatus, StaffAccessLevel, SupportTicketStatus, UserRole } from "@prisma/client";
+import { AdminPermissionLevel, AdminSection, CampaignInviteStatus, FormatDeliverableStatus, KycStatus, NewClipperIntakeStatus, StaffAccessLevel, SupportTicketStatus, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 
 import { ActivityLogService } from "../activity/activity-log.service";
+import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
 import { PrismaService } from "../prisma/prisma.service";
 import { AdminRolesService } from "../admin-roles/admin-roles.service";
@@ -291,12 +292,16 @@ export class AdminService {
           where: { id: t.participationId },
           include: {
             creator: { select: { id: true, displayName: true } },
-            campaign: { select: { ratePer1kPaise: true } },
+            campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
           },
         });
         const views = t._sum?.viewCount ?? 0;
         const earned = participation
-          ? Math.round((views / 1000) * participation.campaign.ratePer1kPaise)
+          ? computeEstimatedPaise(
+              views,
+              participation.campaign.ratePer1kPaise,
+              participation.campaign.maxPayoutPaise,
+            )
           : 0;
         return {
           creatorId: participation?.creator.id ?? "",
@@ -597,6 +602,7 @@ export class AdminService {
         label: p.label,
         avatarUrl: p.avatarUrl,
         isDefault: p.isDefault,
+        socialLinks: (p.socialLinks as Record<string, string> | null) ?? {},
       })),
       wallet: {
         availablePaise: wallet?.availablePaise ?? 0,
@@ -913,5 +919,80 @@ export class AdminService {
     }
 
     return { paidCount, totalPaidPaise };
+  }
+
+  /** Lets N more new clippers join a campaign whose intake auto-closed at
+   * the 80% threshold. Setting 0 is equivalent to leaving intake closed —
+   * there's no "let nobody in" status distinct from closed_at_threshold. */
+  async setCampaignClipperIntake(campaignId: string, extraClipperAllowance: number) {
+    const updated = await this.prisma.campaign
+      .update({
+        where: { id: campaignId },
+        data: {
+          extraClipperAllowance,
+          newClipperIntakeStatus:
+            extraClipperAllowance > 0
+              ? NewClipperIntakeStatus.manually_extended
+              : NewClipperIntakeStatus.closed_at_threshold,
+        },
+      })
+      .catch((e) => {
+        if (e.code === "P2025") {
+          throw new NotFoundException({ code: "NOT_FOUND", message: "Campaign not found" });
+        }
+        throw e;
+      });
+
+    const utilizationBps = await this.getPoolUtilizationBps(updated.id, updated.budgetPaise);
+    this.realtime.emitCampaignUpdated({
+      id: updated.id,
+      brandProfileId: updated.brandProfileId,
+      newClipperIntakeStatus: updated.newClipperIntakeStatus,
+      poolUtilizationBps: utilizationBps,
+    });
+
+    return {
+      id: updated.id,
+      newClipperIntakeStatus: updated.newClipperIntakeStatus,
+      extraClipperAllowance: updated.extraClipperAllowance,
+    };
+  }
+
+  /** Per-campaign toggle: when true, an overperforming clipper's views past
+   * their own maxPayoutPaise still count toward filling the last of the
+   * pool. The clipper's own payout stays capped either way — this only
+   * changes how much of the *pool* their overperformance is considered to
+   * have used. Defaults to false; this is always an explicit admin choice. */
+  async setCampaignPoolOverflow(campaignId: string, allowExcessViewsToFillPool: boolean) {
+    const updated = await this.prisma.campaign
+      .update({
+        where: { id: campaignId },
+        data: { allowExcessViewsToFillPool },
+      })
+      .catch((e) => {
+        if (e.code === "P2025") {
+          throw new NotFoundException({ code: "NOT_FOUND", message: "Campaign not found" });
+        }
+        throw e;
+      });
+
+    const utilizationBps = await this.getPoolUtilizationBps(updated.id, updated.budgetPaise);
+    this.realtime.emitCampaignUpdated({
+      id: updated.id,
+      brandProfileId: updated.brandProfileId,
+      allowExcessViewsToFillPool: updated.allowExcessViewsToFillPool,
+      poolUtilizationBps: utilizationBps,
+    });
+
+    return {
+      id: updated.id,
+      allowExcessViewsToFillPool: updated.allowExcessViewsToFillPool,
+    };
+  }
+
+  private async getPoolUtilizationBps(campaignId: string, budgetPaise: number): Promise<number> {
+    if (budgetPaise <= 0) return 0;
+    const used = await getCampaignPoolUsage(this.prisma, campaignId);
+    return Math.min(10000, Math.floor((used / budgetPaise) * 10000));
   }
 }

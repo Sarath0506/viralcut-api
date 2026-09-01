@@ -7,6 +7,7 @@ import {
 import {
   CampaignStatus,
   FormatDeliverableStatus,
+  NewClipperIntakeStatus,
   Prisma,
   UserRole,
 } from "@prisma/client";
@@ -15,6 +16,7 @@ import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
 import { ApifyService } from "../common/apify.service";
+import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
 import { CreatorProfilesService } from "../creator-profiles/creator-profiles.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
@@ -263,6 +265,62 @@ export class ParticipationService {
         message: "This profile already joined this campaign",
         details: { participation: this.formatParticipation(existing) },
       });
+    }
+
+    // The stored intake status only flips reactively — normally when a
+    // deliverable's views get refreshed (see _evaluateCampaignPoolThresholds)
+    // — so a campaign that crossed the 80% pool threshold with no recent
+    // view refresh would still read "open" here and let new clippers in
+    // past the cutoff. Re-evaluate against live pool usage on every join
+    // attempt so the gate can't go stale.
+    const poolState = await this._evaluateCampaignPoolThresholds(campaign);
+    const intakeStatus = poolState.newClipperIntakeStatus;
+    if (intakeStatus !== campaign.newClipperIntakeStatus || poolState.paused) {
+      this.realtime.emitCampaignUpdated({
+        id: campaign.id,
+        brandProfileId: campaign.brandProfileId,
+        ...(poolState.paused ? { status: CampaignStatus.paused } : {}),
+        newClipperIntakeStatus: intakeStatus,
+        poolUtilizationBps: poolState.utilizationBps,
+      });
+    }
+    if (poolState.paused) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Campaign not available",
+      });
+    }
+
+    if (intakeStatus === NewClipperIntakeStatus.closed_at_threshold) {
+      throw new BadRequestException({
+        code: "INTAKE_CLOSED",
+        message: "This campaign's budget pool is nearly full and isn't accepting new clippers right now.",
+      });
+    }
+
+    if (intakeStatus === NewClipperIntakeStatus.manually_extended) {
+      // Atomic: only succeeds if the allowance is still > 0, so two creators
+      // joining at the same instant can't both consume the last slot.
+      const consumed = await this.prisma.campaign.updateMany({
+        where: { id: campaignId, extraClipperAllowance: { gt: 0 } },
+        data: { extraClipperAllowance: { decrement: 1 } },
+      });
+      if (consumed.count === 0) {
+        throw new BadRequestException({
+          code: "INTAKE_CLOSED",
+          message: "This campaign's budget pool is nearly full and isn't accepting new clippers right now.",
+        });
+      }
+      const remaining = await this.prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { extraClipperAllowance: true },
+      });
+      if ((remaining?.extraClipperAllowance ?? 0) <= 0) {
+        await this.prisma.campaign.update({
+          where: { id: campaignId },
+          data: { newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold },
+        });
+      }
     }
 
     const platforms = normalizeCampaignPlatforms(
@@ -1160,15 +1218,30 @@ export class ParticipationService {
       },
     });
 
-    // Auto-pause if the campaign budget pool is now full; emit update either way
-    // so brand portal pool bars refresh in real time after every view sync.
-    const wasPaused = await this._autoPauseCampaignIfPoolFull(deliverable.participation.campaign);
-    if (!wasPaused) {
-      this.realtime.emitCampaignUpdated({
-        id: deliverable.participation.campaign.id,
-        brandProfileId: deliverable.participation.campaign.brandProfileId,
-      });
-    }
+    // Re-evaluate the pool: close intake at the 80% threshold, auto-pause at
+    // 100%. Emit exactly one campaign:updated either way so brand portal
+    // pool bars and intake-status badges refresh live after every view sync.
+    const poolState = await this._evaluateCampaignPoolThresholds(deliverable.participation.campaign);
+    this.realtime.emitCampaignUpdated({
+      id: deliverable.participation.campaign.id,
+      brandProfileId: deliverable.participation.campaign.brandProfileId,
+      ...(poolState.paused ? { status: CampaignStatus.paused } : {}),
+      newClipperIntakeStatus: poolState.newClipperIntakeStatus,
+      poolUtilizationBps: poolState.utilizationBps,
+    });
+
+    // Analytics above are always the real, uncapped numbers from Apify.
+    // payoutCapped tells the client this deliverable's *earnings* have hit
+    // its maxPayoutPaise ceiling even though views keep climbing — so the UI
+    // can show "earnings capped, views still growing" instead of implying a
+    // rising ₹ figure that isn't actually rising anymore.
+    const campaign = deliverable.participation.campaign;
+    const cappedEstimatePaise = computeEstimatedPaise(
+      updated.viewCount,
+      campaign.ratePer1kPaise,
+      campaign.maxPayoutPaise,
+    );
+    const payoutCapped = cappedEstimatePaise >= campaign.maxPayoutPaise;
 
     return {
       id:           updated.id,
@@ -1177,48 +1250,56 @@ export class ParticipationService {
       likeCount:    updated.likeCount,
       commentCount: updated.commentCount,
       shareCount:   updated.shareCount,
+      payoutCapped,
     };
   }
 
-  private async _autoPauseCampaignIfPoolFull(campaign: {
+  /** Re-checks a live campaign's pool usage against its 80% intake threshold
+   * and its 100% budget ceiling, applying whichever state changes now apply.
+   * Does not emit realtime events itself — callers that already need to emit
+   * an update (e.g. after a view refresh) build one payload from the result
+   * instead of this firing a second, separate event. */
+  private async _evaluateCampaignPoolThresholds(campaign: {
     id: string;
     status: CampaignStatus;
     budgetPaise: number;
     brandProfileId: string | null;
-  }): Promise<boolean> {
-    if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) return false;
+    newClipperIntakeStatus: NewClipperIntakeStatus;
+    poolThresholdBps: number;
+  }): Promise<{
+    paused: boolean;
+    newClipperIntakeStatus: NewClipperIntakeStatus;
+    utilizationBps: number;
+  }> {
+    if (campaign.status !== CampaignStatus.live || campaign.budgetPaise <= 0) {
+      return { paused: false, newClipperIntakeStatus: campaign.newClipperIntakeStatus, utilizationBps: 0 };
+    }
 
-    const rows = await this.prisma.$queryRaw<{ total: bigint }[]>`
-      SELECT COALESCE(SUM(
-        COALESCE(
-          fd.paid_amount_paise,
-          LEAST(
-            FLOOR(fd.view_count::numeric * c.rate_per_1k_paise::numeric / 1000),
-            c.max_payout_paise::numeric
-          )
-        )
-      ), 0) AS total
-      FROM campaign_participations cp
-      JOIN format_deliverables fd ON fd.participation_id = cp.id
-      JOIN campaigns c ON c.id = cp.campaign_id
-      WHERE cp.campaign_id = ${campaign.id}
-    `;
+    const budgetUsed = await getCampaignPoolUsage(this.prisma, campaign.id);
+    const utilizationBps = Math.min(10000, Math.floor((budgetUsed / campaign.budgetPaise) * 10000));
 
-    const budgetUsed = Number(rows[0]?.total ?? 0);
-    if (budgetUsed < campaign.budgetPaise) return false;
+    let newClipperIntakeStatus = campaign.newClipperIntakeStatus;
+    if (
+      newClipperIntakeStatus === NewClipperIntakeStatus.open &&
+      utilizationBps >= campaign.poolThresholdBps
+    ) {
+      newClipperIntakeStatus = NewClipperIntakeStatus.closed_at_threshold;
+      await this.prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { newClipperIntakeStatus },
+      });
+    }
+
+    if (budgetUsed < campaign.budgetPaise) {
+      return { paused: false, newClipperIntakeStatus, utilizationBps };
+    }
 
     await this.prisma.campaign.update({
       where: { id: campaign.id },
       data: { status: CampaignStatus.paused },
     });
 
-    this.realtime.emitCampaignUpdated({
-      id: campaign.id,
-      status: CampaignStatus.paused,
-      brandProfileId: campaign.brandProfileId,
-    });
-
-    return true;
+    return { paused: true, newClipperIntakeStatus, utilizationBps };
   }
 
   async countPendingReviewsForBrand(

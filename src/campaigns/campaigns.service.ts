@@ -9,6 +9,7 @@ import {
   CampaignOwnership,
   CampaignStatus,
   CampaignWizardStep,
+  NewClipperIntakeStatus,
   Prisma,
   StaffAccessLevel,
   UserRole,
@@ -16,6 +17,7 @@ import {
 
 import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
+import { getCampaignPoolUsageMap } from "../common/campaign-pool";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
 import {
@@ -34,29 +36,10 @@ export class CampaignsService {
     private readonly activityLog: ActivityLogService,
   ) {}
 
-  private async fetchBudgetUsedMap(campaignIds: string[]): Promise<Record<string, number>> {
-    if (!campaignIds.length) return {};
-    // Use COALESCE(paid_amount_paise, estimated) so paid takes priority once processed;
-    // fall back to view-count-derived estimate for campaigns with no payouts yet.
-    const rows = await this.prisma.$queryRaw<{ campaign_id: string; total: bigint }[]>`
-      SELECT
-        cp.campaign_id,
-        COALESCE(SUM(
-          COALESCE(
-            fd.paid_amount_paise,
-            LEAST(
-              FLOOR(fd.view_count::numeric * c.rate_per_1k_paise::numeric / 1000),
-              c.max_payout_paise::numeric
-            )
-          )
-        ), 0) AS total
-      FROM campaign_participations cp
-      JOIN format_deliverables fd ON fd.participation_id = cp.id
-      JOIN campaigns c ON c.id = cp.campaign_id
-      WHERE cp.campaign_id = ANY(${campaignIds}::text[])
-      GROUP BY cp.campaign_id
-    `;
-    return Object.fromEntries(rows.map((r) => [r.campaign_id, Number(r.total)]));
+  // Use COALESCE(paid_amount_paise, estimated) so paid takes priority once processed;
+  // fall back to view-count-derived estimate for campaigns with no payouts yet.
+  private fetchBudgetUsedMap(campaignIds: string[]): Promise<Record<string, number>> {
+    return getCampaignPoolUsageMap(this.prisma, campaignIds);
   }
 
   async listLiveForCreators() {
@@ -595,6 +578,8 @@ export class CampaignsService {
     maxPayoutPaise: number;
     budgetPaise: number;
     budgetUsedPaise: number;
+    newClipperIntakeStatus?: NewClipperIntakeStatus;
+    poolThresholdBps?: number;
     startDate: Date | null;
     createdAt: Date;
     updatedAt?: Date;
@@ -605,6 +590,22 @@ export class CampaignsService {
         : 0;
     // Show at least 1% when any budget has been consumed so the bar is visibly non-empty.
     const poolPercent = rawPercent === 0 ? 0 : Math.max(1, Math.round(rawPercent));
+
+    // The stored newClipperIntakeStatus only flips reactively — normally on
+    // a deliverable's view refresh or a join attempt (see
+    // _evaluateCampaignPoolThresholds) — so it can lag behind the live
+    // poolPercent computed just above from the same fresh budgetUsedPaise.
+    // Derive what clippers actually see from that same live number so the
+    // "Apply" CTA can never show open while the pool bar already reads past
+    // threshold; the stored field still catches up for real via the next
+    // view refresh or join attempt.
+    const utilizationBps = Math.round(rawPercent * 100);
+    const poolThresholdBps = c.poolThresholdBps ?? 8000;
+    const storedIntakeStatus = c.newClipperIntakeStatus ?? NewClipperIntakeStatus.open;
+    const newClipperIntakeStatus =
+      storedIntakeStatus === NewClipperIntakeStatus.open && utilizationBps >= poolThresholdBps
+        ? NewClipperIntakeStatus.closed_at_threshold
+        : storedIntakeStatus;
 
     return {
       id: c.id,
@@ -635,6 +636,7 @@ export class CampaignsService {
       budgetUsedPaise: c.budgetUsedPaise,
       poolPercent,
       poolRemainingPercent: 100 - poolPercent,
+      newClipperIntakeStatus,
       startDate: c.startDate?.toISOString() ?? null,
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt?.toISOString() ?? c.createdAt.toISOString(),

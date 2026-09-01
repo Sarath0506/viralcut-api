@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
@@ -37,6 +37,8 @@ function formatLog(log: {
 
 @Injectable()
 export class BulkNotificationService {
+  private readonly logger = new Logger(BulkNotificationService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly push: PushNotificationService,
@@ -80,8 +82,12 @@ export class BulkNotificationService {
           title: dto.title,
           body: dto.message,
         });
-        if (result.delivered) pushSentCount++;
-        else pushFailedCount++;
+        if (result.delivered) {
+          pushSentCount++;
+        } else {
+          this.logger.warn(`Push bulk send skipped for ${r.id}: ${result.reason}`);
+          pushFailedCount++;
+        }
       }
 
       if (dto.useWhatsapp) {
@@ -95,7 +101,9 @@ export class BulkNotificationService {
               message: dto.message,
             });
             whatsappSentCount++;
-          } catch {
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger.error(`WhatsApp bulk send failed for ${r.id}: ${message}`);
             whatsappFailedCount++;
           }
         }
