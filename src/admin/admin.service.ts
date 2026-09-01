@@ -602,6 +602,7 @@ export class AdminService {
         label: p.label,
         avatarUrl: p.avatarUrl,
         isDefault: p.isDefault,
+        socialLinks: (p.socialLinks as Record<string, string> | null) ?? {},
       })),
       wallet: {
         availablePaise: wallet?.availablePaise ?? 0,

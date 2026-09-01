@@ -82,6 +82,7 @@ export class CreatorsService {
         label: p.label,
         avatarUrl: p.avatarUrl,
         isDefault: p.isDefault,
+        socialLinks: (p.socialLinks as Record<string, string> | null) ?? {},
       })),
       runningCampaigns,
       pastCampaigns,
