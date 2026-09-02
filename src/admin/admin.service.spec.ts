@@ -1,4 +1,4 @@
-import { NotFoundException } from "@nestjs/common";
+import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { NewClipperIntakeStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -7,6 +7,10 @@ import { AdminService } from "./admin.service";
 function makeService() {
   const prisma = {
     campaign: { update: vi.fn() },
+    brandProfile: { findUnique: vi.fn(), update: vi.fn() },
+    user: { update: vi.fn() },
+    refreshToken: { updateMany: vi.fn() },
+    $transaction: vi.fn().mockResolvedValue([]),
     $queryRaw: vi.fn().mockResolvedValue([{ total: 0n }]),
   };
   const realtime = { emitCampaignUpdated: vi.fn() };
@@ -97,5 +101,51 @@ describe("AdminService.setCampaignPoolOverflow", () => {
     expect(realtime.emitCampaignUpdated).toHaveBeenCalledWith(
       expect.objectContaining({ id: "camp-1", allowExcessViewsToFillPool: true }),
     );
+  });
+});
+
+describe("AdminService.deleteBrand", () => {
+  it("throws NotFoundException for an unknown brand", async () => {
+    const { service, prisma } = makeService();
+    prisma.brandProfile.findUnique.mockResolvedValue(null);
+
+    await expect(service.deleteBrand("missing")).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("blocks deletion when the brand has existing campaigns", async () => {
+    const { service, prisma } = makeService();
+    prisma.brandProfile.findUnique.mockResolvedValue({
+      id: "brand-1",
+      userId: "user-1",
+      _count: { campaigns: 1 },
+    });
+
+    await expect(service.deleteBrand("brand-1")).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("soft-deletes and scrubs PII when the brand has no campaigns", async () => {
+    const { service, prisma } = makeService();
+    prisma.brandProfile.findUnique.mockResolvedValue({
+      id: "brand-1",
+      userId: "user-1",
+      _count: { campaigns: 0 },
+    });
+
+    const result = await service.deleteBrand("brand-1");
+
+    expect(result).toEqual({ deleted: true });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: "user-1" },
+      data: expect.objectContaining({ isActive: false, email: null, phone: null }),
+    });
+    expect(prisma.brandProfile.update).toHaveBeenCalledWith({
+      where: { id: "brand-1" },
+      data: expect.objectContaining({ companyName: "Deleted brand", companyEmail: null }),
+    });
+    expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+      where: { userId: "user-1", revokedAt: null },
+      data: { revokedAt: expect.any(Date) },
+    });
   });
 });

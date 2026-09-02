@@ -26,6 +26,7 @@ export type SocialProfileStats = {
 export class ApifyService {
   private readonly logger = new Logger(ApifyService.name);
   private readonly apiToken: string | null;
+  private readonly hikerApiKey: string | null;
 
   // Apify actor IDs for each platform
   private static readonly ACTORS = {
@@ -36,6 +37,11 @@ export class ApifyService {
 
   constructor(private readonly config: ConfigService) {
     this.apiToken = this.config.get<string>("APIFY_API_TOKEN") ?? null;
+    // TEMPORARY: Instagram is being test-driven through HikerAPI instead of
+    // the Apify actor above — YouTube/Twitter are untouched. Revert by
+    // restoring scrapeInstagram/fetchInstagramProfile to call
+    // runActorAndGetDataset(ACTORS.instagram, ...) like the other platforms.
+    this.hikerApiKey = this.config.get<string>("HIKERAPI_KEY") ?? null;
   }
 
   get isConfigured(): boolean {
@@ -96,19 +102,34 @@ export class ApifyService {
     return items;
   }
 
+  /** HikerAPI request helper — TEMPORARY, Instagram-only (see constructor note). */
+  private async hikerApiGet(path: string, params: Record<string, string>): Promise<any> {
+    if (!this.hikerApiKey) {
+      throw new Error("HIKERAPI_KEY not set");
+    }
+    const url = `https://api.hikerapi.com${path}?${new URLSearchParams(params).toString()}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    const res = await fetch(url, {
+      headers: { "x-access-key": this.hikerApiKey },
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+    const body = await res.json();
+    if (!res.ok) {
+      throw new Error(`HikerAPI ${path} returned ${res.status}: ${JSON.stringify(body)}`);
+    }
+    return body;
+  }
+
   private async scrapeInstagram(url: string): Promise<Omit<PlatformViewResult, "platform">> {
-    const items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
-      directUrls: [url],
-      resultsType: "posts",
-      resultsLimit: 1,
-    });
-    const p = items[0] ?? {};
+    const data = await this.hikerApiGet("/v2/media/info/by/url", { url });
+    const m = data.media_or_ad ?? {};
     return {
-      viewCount:    p.videoViewCount ?? p.playCount ?? 0,
-      reach:        p.reachCount ?? p.videoViewCount ?? p.playCount ?? 0,
-      likeCount:    p.likesCount ?? p.likes ?? 0,
-      commentCount: p.commentsCount ?? p.comments ?? 0,
-      shareCount:   p.sharesCount ?? p.shares ?? 0,
+      viewCount:    m.play_count ?? m.view_count ?? 0,
+      reach:        m.play_count ?? m.view_count ?? 0,
+      likeCount:    m.like_count ?? 0,
+      commentCount: m.comment_count ?? 0,
+      shareCount:   m.reshare_count ?? 0,
     };
   }
 
@@ -183,54 +204,20 @@ export class ApifyService {
       .pop()
       ?.split("?")[0] ?? "";
 
-    let items: any[] = [];
-
-    // Attempt 1: usernames without resultsType — returns profile object directly
-    try {
-      items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
-        usernames: [username],
-        resultsLimit: 1,
-      });
-      items = items.filter((i) => !i?.error);
-    } catch (_) {}
-
-    // Attempt 2: usernames with resultsType details (works for accounts with posts)
-    if (!items.length) {
-      try {
-        items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
-          usernames: [username],
-          resultsType: "details",
-          resultsLimit: 3,
-        });
-        items = items.filter((i) => !i?.error);
-      } catch (_) {}
-    }
-
-    // Attempt 3: directUrls fallback
-    if (!items.length) {
-      try {
-        items = await this.runActorAndGetDataset(ApifyService.ACTORS.instagram, {
-          directUrls: [profileUrl],
-          resultsType: "details",
-          resultsLimit: 3,
-        });
-        items = items.filter((i) => !i?.error);
-      } catch (_) {}
-    }
-
-    if (!items.length || items[0]?.error) {
+    const data = await this.hikerApiGet("/v2/user/by/username", { username });
+    const p = data.user ?? data;
+    if (!p?.username) {
       throw new Error(`Instagram: no profile found for "${username}". Account may be private or not exist.`);
     }
 
-    const p = items[0];
     return {
       platform: "instagram",
       handle: p.username ?? username,
-      displayName: p.fullName ?? p.name ?? null,
-      followersCount: p.followersCount ?? p.followers ?? 0,
-      followingCount: p.followsCount ?? p.following ?? 0,
-      postsCount: p.postsCount ?? p.mediaCount ?? p.igtvVideoCount ?? 0,
-      profilePicUrl: p.profilePicUrl ?? p.profilePicUrlHD ?? null,
+      displayName: p.full_name ?? null,
+      followersCount: p.follower_count ?? 0,
+      followingCount: p.following_count ?? 0,
+      postsCount: p.media_count ?? 0,
+      profilePicUrl: p.profile_pic_url ?? null,
       bio: p.biography ?? null,
       fetchedAt: new Date().toISOString(),
     };
