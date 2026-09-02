@@ -129,8 +129,7 @@ export class ApifyService {
       reach:        m.play_count ?? m.view_count ?? 0,
       likeCount:    m.like_count ?? 0,
       commentCount: m.comment_count ?? 0,
-      // Instagram's public API never exposes share counts, on Apify or here.
-      shareCount:   0,
+      shareCount:   m.reshare_count ?? 0,
     };
   }
 
