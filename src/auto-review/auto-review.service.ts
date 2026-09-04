@@ -8,7 +8,7 @@ import type { AutoReviewOutcome, CriterionResult, GateResult } from "./auto-revi
 import { ChecklistService } from "./checklist.service";
 import { checkFormatGate } from "./format-gate";
 import { GeminiService } from "./gemini.service";
-import { fetchVideoBuffer } from "./media-fetch";
+import { fetchMedia } from "./media-fetch";
 import {
   evaluateDraftLiveMatchGate,
   evaluateOwnershipGate,
@@ -104,22 +104,23 @@ export class AutoReviewService {
     const creatorProfileId = deliverable.participation.creatorProfileId;
     const platform = this.apify.detectPlatform(livePostUrl);
 
-    const [resolution, author, connection, draftBuffer] = await Promise.all([
+    const [resolution, author, connection, draftMedia] = await Promise.all([
       this.apify.checkPostResolves(livePostUrl),
       this.apify.getPostAuthor(livePostUrl),
       this.getConnection(creatorProfileId, platform),
-      deliverable.draftDriveUrl ? fetchVideoBuffer(deliverable.draftDriveUrl) : Promise.resolve(null),
+      deliverable.draftDriveUrl ? fetchMedia(deliverable.draftDriveUrl) : Promise.resolve(null),
     ]);
 
     let liveComparison: { same: boolean; confidence: number; reason: string } | null = null;
-    if (draftBuffer) {
+    if (draftMedia) {
       const liveMedia = await this.apify.getLivePostMedia(livePostUrl);
       if (liveMedia) {
-        const liveBuffer = await fetchVideoBuffer(liveMedia.url);
-        if (liveBuffer) {
+        const liveMediaFetched = await fetchMedia(liveMedia.url);
+        if (liveMediaFetched) {
           liveComparison = await this.gemini.compareDraftToLive({
-            draftVideoBuffer: draftBuffer,
-            liveMediaBuffer: liveBuffer,
+            draftMediaBuffer: draftMedia.buffer,
+            draftMimeType: draftMedia.mimeType,
+            liveMediaBuffer: liveMediaFetched.buffer,
             liveMediaKind: liveMedia.kind,
           });
         }
@@ -133,8 +134,8 @@ export class AutoReviewService {
       evaluateDraftLiveMatchGate(liveComparison),
     ];
 
-    const tier2Results = draftBuffer
-      ? await this.runCompliance(deliverable.participation.campaign, draftBuffer, null)
+    const tier2Results = draftMedia
+      ? await this.runCompliance(deliverable.participation.campaign, draftMedia.buffer, draftMedia.mimeType, null)
       : null;
 
     return {
@@ -159,8 +160,8 @@ export class AutoReviewService {
       return null;
     }
 
-    const draftBuffer = await fetchVideoBuffer(deliverable.draftDriveUrl);
-    if (!draftBuffer) {
+    const draftMedia = await fetchMedia(deliverable.draftDriveUrl);
+    if (!draftMedia) {
       // Drive-linked drafts aren't server-fetchable — see the plan doc.
       // Not a failure, just nothing this pipeline can check.
       const tier1Results: GateResult[] = [
@@ -173,10 +174,15 @@ export class AutoReviewService {
       return { decision: "needs_review", tier1Results, tier2Results: null, modelVersion: null };
     }
 
-    const formatResult = await checkFormatGate(draftBuffer, deliverable.platform);
+    const formatResult = await checkFormatGate(draftMedia.buffer, deliverable.platform);
     const tier1Results: GateResult[] = [formatResult];
 
-    const tier2Results = await this.runCompliance(deliverable.participation.campaign, draftBuffer, null);
+    const tier2Results = await this.runCompliance(
+      deliverable.participation.campaign,
+      draftMedia.buffer,
+      draftMedia.mimeType,
+      null,
+    );
 
     return {
       decision: this.decide(tier1Results, tier2Results),
@@ -189,11 +195,12 @@ export class AutoReviewService {
   private async runCompliance(
     campaign: { id: string; brief: string; doRules: string | null; avoidRules: string | null },
     videoBuffer: Buffer,
+    mimeType: string,
     caption: string | null,
   ): Promise<CriterionResult[] | null> {
     const checklist = await this.checklist.getOrCreateChecklist(campaign.id);
     if (!checklist) return null;
-    return this.gemini.evaluateCompliance({ videoBuffer, caption, checklist });
+    return this.gemini.evaluateCompliance({ videoBuffer, mimeType, caption, checklist });
   }
 
   private decide(

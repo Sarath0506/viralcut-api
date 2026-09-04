@@ -86,24 +86,30 @@ export class GeminiService {
    * (verified directly against a real silent/music-only test clip). */
   async evaluateCompliance(input: {
     videoBuffer: Buffer;
+    mimeType: string;
     caption: string | null;
     checklist: ChecklistItem[];
   }): Promise<CriterionResult[] | null> {
     if (!this.client) return null;
     if (input.checklist.length === 0) return [];
     try {
+      const isImage = input.mimeType.startsWith("image/");
       const res = await this.client.models.generateContent({
         model: MODEL,
         contents: [
           {
             role: "user",
             parts: [
-              { inlineData: { mimeType: "video/mp4", data: input.videoBuffer.toString("base64") } },
+              { inlineData: { mimeType: input.mimeType, data: input.videoBuffer.toString("base64") } },
               {
                 text:
-                  "Evaluate this video against each checklist item below. Consider the " +
-                  "visuals, any audible speech (transcribe internally as needed — do not " +
-                  "assume speech exists, some clips are music-only), and the caption. " +
+                  `Evaluate this ${isImage ? "image" : "video"} against each checklist item ` +
+                  "below. Consider the visuals" +
+                  (isImage
+                    ? ""
+                    : ", any audible speech (transcribe internally as needed — do not " +
+                      "assume speech exists, some clips are music-only)") +
+                  ", and the caption. " +
                   "Content may be in English, Hindi, Telugu, Hinglish, or Tenglish — " +
                   "apply the same scrutiny regardless of language or script. For each " +
                   "item return pass/fail, a confidence from 0 to 1, and a short concrete " +
@@ -145,13 +151,17 @@ export class GeminiService {
    * for a live post today; see the plan doc for why this isn't true
    * frame-by-frame or audio comparison). */
   async compareDraftToLive(input: {
-    draftVideoBuffer: Buffer;
+    draftMediaBuffer: Buffer;
+    draftMimeType: string;
     liveMediaBuffer: Buffer;
     liveMediaKind: "video" | "image";
   }): Promise<{ same: boolean; confidence: number; reason: string } | null> {
     if (!this.client) return null;
     try {
       const liveMimeType = input.liveMediaKind === "video" ? "video/mp4" : "image/jpeg";
+      const draftDescription = input.draftMimeType.startsWith("image/")
+        ? "an image that was originally submitted as a draft"
+        : "a video that was originally submitted as a draft";
       const liveDescription =
         input.liveMediaKind === "video"
           ? "a video fetched from a live post"
@@ -162,15 +172,15 @@ export class GeminiService {
           {
             role: "user",
             parts: [
-              { inlineData: { mimeType: "video/mp4", data: input.draftVideoBuffer.toString("base64") } },
+              { inlineData: { mimeType: input.draftMimeType, data: input.draftMediaBuffer.toString("base64") } },
               { inlineData: { mimeType: liveMimeType, data: input.liveMediaBuffer.toString("base64") } },
               {
                 text:
-                  `The first attachment is a video that was originally submitted as a draft. ` +
+                  `The first attachment is ${draftDescription}. ` +
                   `The second attachment is ${liveDescription} that's claimed to be the same ` +
                   "content, posted later. Does the second attachment look like it's from the " +
-                  "same clip (same subject, setting, edit) as the draft? Judge on visual " +
-                  "content only if the second attachment is a still image.",
+                  "same clip (same subject, setting, edit) as the first? Judge on visual " +
+                  "content only.",
               },
             ],
           },
