@@ -116,6 +116,12 @@ enum AutoReviewDecision {
   needs_review
 }
 
+enum AutoReviewStage {
+  draft
+
+  proof
+}
+
 enum TransactionType {
   earning_credit
 
@@ -962,6 +968,8 @@ model AutoReviewResult {
   id String @id @default(cuid())
 
   deliverableId String @map("deliverable_id")
+
+  stage AutoReviewStage @default(proof)
 
   decision AutoReviewDecision
 

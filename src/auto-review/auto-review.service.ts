@@ -1,23 +1,33 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 
 import { ApifyService } from "../common/apify.service";
+import type { Env } from "../config/env";
 import { PrismaService } from "../prisma/prisma.service";
-import type { AutoReviewOutcome, GateResult } from "./auto-review.types";
+import type { AutoReviewOutcome, CriterionResult, GateResult } from "./auto-review.types";
+import { ChecklistService } from "./checklist.service";
+import { checkFormatGate } from "./format-gate";
+import { GeminiService } from "./gemini.service";
+import { fetchVideoBuffer } from "./media-fetch";
 import {
+  evaluateDraftLiveMatchGate,
   evaluateOwnershipGate,
   evaluatePlatformMatchGate,
   evaluateResolvesGate,
-  stubDraftLiveMatchGate,
 } from "./tier1-gates";
 
-/** Automated pre-screening for a submitted live proof, run in shadow mode
- * alongside the existing human approveProof()/rejectProof() flow — it only
- * ever produces a logged AutoReviewResult row. It never touches the
- * deliverable's real status, never sets paidAmountPaise, and never calls
- * anything in payouts.service.ts. See the plan doc (feat/automated-proof-
- * review branch) for the full design and the gaps this pass deliberately
- * doesn't attempt to solve (Drive-linked drafts, true video-to-video
- * comparison for the draft-vs-live gate). */
+const GEMINI_MODEL_VERSION = "gemini-2.5-flash";
+const HIGH_CONFIDENCE_FAIL_THRESHOLD = 0.8;
+const LOW_CONFIDENCE_THRESHOLD = 0.7;
+
+/** Automated pre-screening for both the draft/work-upload stage and the
+ * live-proof stage, run in shadow mode alongside the existing human review
+ * flows for each — it only ever produces a logged AutoReviewResult row.
+ * Never touches a deliverable's real status, never sets paidAmountPaise,
+ * never calls anything in payouts.service.ts. Gated end-to-end behind
+ * AUTO_REVIEW_ENABLED — with that off (the default), nothing here runs and
+ * no external API is ever called. See the plan doc for the full design and
+ * the gaps this deliberately doesn't attempt to solve. */
 @Injectable()
 export class AutoReviewService {
   private readonly logger = new Logger(AutoReviewService.name);
@@ -25,81 +35,187 @@ export class AutoReviewService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly apify: ApifyService,
+    private readonly gemini: GeminiService,
+    private readonly checklist: ChecklistService,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
-  /** Entry point — always called fire-and-forget from submitLiveProof, never
-   * awaited by the request/response cycle. Swallows every error itself so a
-   * pipeline failure can never surface to the caller or crash anything;
-   * worst case, no AutoReviewResult row gets written for this run. */
-  async runPipeline(deliverableId: string): Promise<void> {
+  private get enabled(): boolean {
+    return this.config.get("AUTO_REVIEW_ENABLED", { infer: true });
+  }
+
+  /** Entry point from submitLiveProof — fire-and-forget, never awaited. */
+  async runProofPipeline(deliverableId: string): Promise<void> {
+    if (!this.enabled) return;
     try {
-      const outcome = await this.evaluate(deliverableId);
-      if (!outcome) return;
-      await this.prisma.autoReviewResult.create({
-        data: {
-          deliverableId,
-          decision: outcome.decision,
-          tier1Results: outcome.tier1Results,
-          tier2Results: outcome.tier2Results ?? undefined,
-          modelVersion: outcome.modelVersion,
-        },
-      });
+      const outcome = await this.evaluateProof(deliverableId);
+      if (outcome) await this.persist(deliverableId, "proof", outcome);
     } catch (err) {
-      this.logger.error(`Auto-review pipeline failed for deliverable ${deliverableId}: ${err}`);
+      this.logger.error(`Proof auto-review failed for deliverable ${deliverableId}: ${err}`);
     }
   }
 
-  private async evaluate(deliverableId: string): Promise<AutoReviewOutcome | null> {
+  /** Entry point from submitDraft — fire-and-forget, never awaited. */
+  async runDraftPipeline(deliverableId: string): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      const outcome = await this.evaluateDraft(deliverableId);
+      if (outcome) await this.persist(deliverableId, "draft", outcome);
+    } catch (err) {
+      this.logger.error(`Draft auto-review failed for deliverable ${deliverableId}: ${err}`);
+    }
+  }
+
+  private async persist(
+    deliverableId: string,
+    stage: "draft" | "proof",
+    outcome: AutoReviewOutcome,
+  ): Promise<void> {
+    await this.prisma.autoReviewResult.create({
+      data: {
+        deliverableId,
+        stage,
+        decision: outcome.decision,
+        tier1Results: outcome.tier1Results,
+        tier2Results: outcome.tier2Results ?? undefined,
+        modelVersion: outcome.modelVersion,
+      },
+    });
+  }
+
+  private async evaluateProof(deliverableId: string): Promise<AutoReviewOutcome | null> {
     const deliverable = await this.prisma.formatDeliverable.findUnique({
       where: { id: deliverableId },
       include: {
-        participation: { select: { creatorProfileId: true } },
+        participation: {
+          select: {
+            creatorProfileId: true,
+            campaign: { select: { id: true, brief: true, doRules: true, avoidRules: true } },
+          },
+        },
       },
     });
-
     if (!deliverable || !deliverable.livePostUrl) {
-      this.logger.warn(`Auto-review skipped — deliverable ${deliverableId} not found or has no live URL`);
+      this.logger.warn(`Proof auto-review skipped — deliverable ${deliverableId} not found or has no live URL`);
       return null;
     }
 
     const livePostUrl = deliverable.livePostUrl;
     const creatorProfileId = deliverable.participation.creatorProfileId;
+    const platform = this.apify.detectPlatform(livePostUrl);
 
-    const [resolution, author, connection] = await Promise.all([
+    const [resolution, author, connection, draftBuffer] = await Promise.all([
       this.apify.checkPostResolves(livePostUrl),
       this.apify.getPostAuthor(livePostUrl),
-      this.getConnection(creatorProfileId, this.apify.detectPlatform(livePostUrl)),
+      this.getConnection(creatorProfileId, platform),
+      deliverable.draftDriveUrl ? fetchVideoBuffer(deliverable.draftDriveUrl) : Promise.resolve(null),
     ]);
+
+    let liveComparison: { same: boolean; confidence: number; reason: string } | null = null;
+    if (draftBuffer) {
+      const liveMedia = await this.apify.getLivePostMedia(livePostUrl);
+      if (liveMedia) {
+        const liveBuffer = await fetchVideoBuffer(liveMedia.url);
+        if (liveBuffer) {
+          liveComparison = await this.gemini.compareDraftToLive({
+            draftVideoBuffer: draftBuffer,
+            liveMediaBuffer: liveBuffer,
+            liveMediaKind: liveMedia.kind,
+          });
+        }
+      }
+    }
 
     const tier1Results: GateResult[] = [
       evaluateResolvesGate(resolution),
-      evaluatePlatformMatchGate(this.apify.detectPlatform(livePostUrl), deliverable.platform),
+      evaluatePlatformMatchGate(platform, deliverable.platform),
       evaluateOwnershipGate(connection, author),
-      stubDraftLiveMatchGate(),
+      evaluateDraftLiveMatchGate(liveComparison),
     ];
 
+    const tier2Results = draftBuffer
+      ? await this.runCompliance(deliverable.participation.campaign, draftBuffer, null)
+      : null;
+
     return {
-      decision: this.decide(tier1Results),
+      decision: this.decide(tier1Results, tier2Results),
       tier1Results,
-      // Tier 2 hasn't run yet in this build — a clean Tier 1 pass still
-      // can't reach auto_approved until it does (see decide()).
-      tier2Results: null,
-      modelVersion: null,
+      tier2Results,
+      modelVersion: tier2Results || liveComparison ? GEMINI_MODEL_VERSION : null,
     };
   }
 
-  private decide(tier1Results: GateResult[]): AutoReviewOutcome["decision"] {
-    // Only the two genuinely deterministic gates (resolves, platform match)
-    // can trigger an auto-reject — ownership and draft-vs-live are
-    // "unresolved, never failed" by design, per the spec.
-    const hardFail = tier1Results.some(
-      (r) => r.status === "fail" && (r.gate === "resolves_and_public" || r.gate === "platform_match"),
-    );
-    if (hardFail) return "auto_rejected";
+  private async evaluateDraft(deliverableId: string): Promise<AutoReviewOutcome | null> {
+    const deliverable = await this.prisma.formatDeliverable.findUnique({
+      where: { id: deliverableId },
+      include: {
+        participation: {
+          select: { campaign: { select: { id: true, brief: true, doRules: true, avoidRules: true } } },
+        },
+      },
+    });
+    if (!deliverable || !deliverable.draftDriveUrl) {
+      this.logger.warn(`Draft auto-review skipped — deliverable ${deliverableId} not found or has no draft`);
+      return null;
+    }
 
-    // Anything unresolved (including the Tier 2 stub, always unresolved
-    // until the next diff) means we can't confidently auto-approve yet.
-    return "needs_review";
+    const draftBuffer = await fetchVideoBuffer(deliverable.draftDriveUrl);
+    if (!draftBuffer) {
+      // Drive-linked drafts aren't server-fetchable — see the plan doc.
+      // Not a failure, just nothing this pipeline can check.
+      const tier1Results: GateResult[] = [
+        {
+          gate: "format_match",
+          status: "unresolved",
+          reason: "Draft is not an app-uploaded file (likely a Drive link) — can't fetch it to check",
+        },
+      ];
+      return { decision: "needs_review", tier1Results, tier2Results: null, modelVersion: null };
+    }
+
+    const formatResult = await checkFormatGate(draftBuffer, deliverable.platform);
+    const tier1Results: GateResult[] = [formatResult];
+
+    const tier2Results = await this.runCompliance(deliverable.participation.campaign, draftBuffer, null);
+
+    return {
+      decision: this.decide(tier1Results, tier2Results),
+      tier1Results,
+      tier2Results,
+      modelVersion: tier2Results ? GEMINI_MODEL_VERSION : null,
+    };
+  }
+
+  private async runCompliance(
+    campaign: { id: string; brief: string; doRules: string | null; avoidRules: string | null },
+    videoBuffer: Buffer,
+    caption: string | null,
+  ): Promise<CriterionResult[] | null> {
+    const checklist = await this.checklist.getOrCreateChecklist(campaign.id);
+    if (!checklist) return null;
+    return this.gemini.evaluateCompliance({ videoBuffer, caption, checklist });
+  }
+
+  private decide(
+    tier1Results: GateResult[],
+    tier2Results: CriterionResult[] | null,
+  ): AutoReviewOutcome["decision"] {
+    if (tier1Results.some((r) => r.status === "fail")) return "auto_rejected";
+    if (tier1Results.some((r) => r.status === "unresolved")) return "needs_review";
+
+    // Tier 1 fully passed — but nothing can be auto_approved without Tier 2
+    // actually having run and agreed.
+    if (tier2Results === null) return "needs_review";
+
+    const highConfidenceFail = tier2Results.some(
+      (c) => !c.pass && c.confidence >= HIGH_CONFIDENCE_FAIL_THRESHOLD,
+    );
+    if (highConfidenceFail) return "auto_rejected";
+
+    const lowConfidence = tier2Results.some((c) => c.confidence < LOW_CONFIDENCE_THRESHOLD);
+    if (lowConfidence) return "needs_review";
+
+    return "auto_approved";
   }
 
   private async getConnection(

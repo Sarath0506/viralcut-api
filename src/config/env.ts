@@ -111,6 +111,16 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true" || v === "1"),
   PAYOUT_ACCOUNT_ENCRYPTION_KEY: z.string().optional(),
+  /** Gemini API key for the automated proof-of-work review pipeline's Tier 2
+   * content-compliance checks (draft and live-proof stages both use this). */
+  GEMINI_API_KEY: z.string().optional(),
+  /** Master switch for the whole automated proof-of-work review pipeline —
+   * both stages, both tiers. Default off: with no key configured or this
+   * unset, nothing runs and nothing is called. */
+  AUTO_REVIEW_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
   /** Firebase Admin SDK service account JSON, base64-encoded (one line —
    * Firebase Console > Project Settings > Service Accounts > Generate new
    * private key, then `base64 -i key.json`). Unset = push notifications

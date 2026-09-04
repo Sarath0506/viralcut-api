@@ -97,14 +97,36 @@ export function evaluateOwnershipGate(
   };
 }
 
-/** Ships with Tier 2 (needs frame extraction + a vision model to do a real
- * comparison) — deliberately stubbed as unresolved for now rather than
- * built as a fake "deterministic" check, despite being listed under Tier 1
- * in the original spec. See the plan doc for why. */
-export function stubDraftLiveMatchGate(): GateResult {
+/** Needs Tier 2's vision capability, so it's evaluated from whatever
+ * comparison result the orchestrator could actually produce — null covers
+ * every reason that could be missing (Drive-linked draft, live media not
+ * fetchable, Gemini not configured, platform not yet supported for this
+ * specific check — currently Instagram only, see ApifyService.getLivePostMedia). */
+export function evaluateDraftLiveMatchGate(
+  comparison: { same: boolean; confidence: number; reason: string } | null,
+): GateResult {
+  if (!comparison) {
+    return {
+      gate: "draft_live_match",
+      status: "unresolved",
+      reason: "Could not compare draft and live content (unfetchable media, unsupported platform, or Tier 2 not configured)",
+    };
+  }
+  if (comparison.confidence < 0.7) {
+    return {
+      gate: "draft_live_match",
+      status: "unresolved",
+      reason: `Low-confidence comparison (${comparison.confidence}): ${comparison.reason}`,
+    };
+  }
+  if (comparison.same) {
+    return { gate: "draft_live_match", status: "pass", reason: comparison.reason };
+  }
+  // A confident mismatch still isn't a hard fail — per the spec, this needs
+  // a human to see what actually happened, not an automatic reject.
   return {
     gate: "draft_live_match",
     status: "unresolved",
-    reason: "Draft-vs-live similarity check not yet implemented — ships with Tier 2",
+    reason: `Content may not match: ${comparison.reason}`,
   };
 }

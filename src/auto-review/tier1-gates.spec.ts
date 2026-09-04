@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  evaluateDraftLiveMatchGate,
   evaluateOwnershipGate,
   evaluatePlatformMatchGate,
   evaluateResolvesGate,
-  stubDraftLiveMatchGate,
 } from "./tier1-gates";
 
 describe("evaluateResolvesGate", () => {
@@ -67,8 +67,23 @@ describe("evaluateOwnershipGate", () => {
   });
 });
 
-describe("stubDraftLiveMatchGate", () => {
-  it("is always unresolved until Tier 2 lands", () => {
-    expect(stubDraftLiveMatchGate().status).toBe("unresolved");
+describe("evaluateDraftLiveMatchGate", () => {
+  it("is unresolved when no comparison could be made", () => {
+    expect(evaluateDraftLiveMatchGate(null).status).toBe("unresolved");
+  });
+
+  it("is unresolved when the comparison confidence is too low", () => {
+    const result = evaluateDraftLiveMatchGate({ same: true, confidence: 0.5, reason: "not sure" });
+    expect(result.status).toBe("unresolved");
+  });
+
+  it("passes on a confident match", () => {
+    const result = evaluateDraftLiveMatchGate({ same: true, confidence: 0.95, reason: "same clip" });
+    expect(result.status).toBe("pass");
+  });
+
+  it("is unresolved (not failed) on a confident mismatch — needs a human to look", () => {
+    const result = evaluateDraftLiveMatchGate({ same: false, confidence: 0.95, reason: "different clip" });
+    expect(result.status).toBe("unresolved");
   });
 });

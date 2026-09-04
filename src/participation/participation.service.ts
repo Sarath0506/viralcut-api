@@ -451,6 +451,11 @@ export class ParticipationService {
       this.deliverableEventPayload(updated, deliverable.participation),
     );
 
+    // Shadow-mode automated review — fire-and-forget, never awaited. Never
+    // changes this response, the deliverable's status, or the human review
+    // flow below; it only ever produces a logged AutoReviewResult row.
+    void this.autoReview.runDraftPipeline(updated.id);
+
     return {
       id: updated.id,
       status: updated.status,
@@ -506,7 +511,7 @@ export class ParticipationService {
     // Shadow-mode automated review — fire-and-forget, never awaited. Never
     // changes this response, the deliverable's status, or the human review
     // flow below; it only ever produces a logged AutoReviewResult row.
-    void this.autoReview.runPipeline(updated.id);
+    void this.autoReview.runProofPipeline(updated.id);
 
     return {
       id: updated.id,

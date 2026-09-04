@@ -191,6 +191,33 @@ export class ApifyService {
     }
   }
 
+  /** Best-effort fetch of the live post's actual media, for the auto-review
+   * pipeline's draft-vs-live comparison. Instagram-only for now — verified
+   * live against a real post that HikerAPI's media-info response includes
+   * `video_versions[N].url` (the real video file, preferred) and
+   * `image_versions2.candidates[N].url` (a static preview, fallback).
+   * YouTube/Twitter aren't attempted here — Apify's actors weren't verified
+   * to return an equally fetchable media URL, and guessing at unverified
+   * field names for this specific check isn't worth the false-confidence
+   * risk; those platforms stay unresolved for this gate. */
+  async getLivePostMedia(
+    livePostUrl: string,
+  ): Promise<{ kind: "video" | "image"; url: string } | null> {
+    if (this.detectPlatform(livePostUrl) !== "instagram" || !this.hikerApiKey) return null;
+    try {
+      const res = await this.hikerApiRawGet("/v2/media/info/by/url", { url: livePostUrl });
+      const media = res.body?.media_or_ad;
+      const videoUrl = media?.video_versions?.[0]?.url;
+      if (typeof videoUrl === "string") return { kind: "video", url: videoUrl };
+      const imageUrl = media?.image_versions2?.candidates?.[0]?.url;
+      if (typeof imageUrl === "string") return { kind: "image", url: imageUrl };
+      return null;
+    } catch (err) {
+      this.logger.warn(`getLivePostMedia failed for ${livePostUrl}: ${err}`);
+      return null;
+    }
+  }
+
   /** Like hikerApiGet, but never throws — returns the status/body so callers
    * can distinguish "not found" from other failures instead of only getting
    * an Error either way. */

@@ -14,6 +14,12 @@ export type CriterionResult = {
   reason: string;
 };
 
+export type ChecklistItem = {
+  id: string;
+  label: string;
+  source: "brief" | "doRules" | "avoidRules";
+};
+
 export type AutoReviewOutcome = {
   decision: "auto_approved" | "auto_rejected" | "needs_review";
   tier1Results: GateResult[];
