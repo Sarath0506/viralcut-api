@@ -108,6 +108,14 @@ enum FormatDeliverableStatus {
   proof_rejected
 }
 
+enum AutoReviewDecision {
+  auto_approved
+
+  auto_rejected
+
+  needs_review
+}
+
 enum TransactionType {
   earning_credit
 
@@ -558,6 +566,8 @@ model Campaign {
 
   maxRepostsPerClip Int? @default(5) @map("max_reposts_per_clip")
 
+  complianceChecklist Json? @map("compliance_checklist")
+
   startDate DateTime? @map("start_date")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -909,6 +919,8 @@ model FormatDeliverable {
 
   marketplaceRepostClaim MarketplaceRepost? @relation("MarketplacePoster")
 
+  autoReviewResults AutoReviewResult[]
+
   @@unique([participationId, platform])
   @@index([participationId])
   @@index([status])
@@ -938,6 +950,33 @@ model MarketplaceRepost {
   @@index([sourceDeliverableId])
   @@index([posterCreatorId, createdAt])
   @@map("marketplace_reposts")
+}
+
+/**
+ * Shadow-mode audit log for the automated proof-review pipeline — never
+ * read by anything that gates payout or the deliverable's real status.
+ * Purely so an automated decision can later be compared against what a
+ * human actually decided, before anyone trusts it to skip review for real.
+ */
+model AutoReviewResult {
+  id String @id @default(cuid())
+
+  deliverableId String @map("deliverable_id")
+
+  decision AutoReviewDecision
+
+  tier1Results Json @map("tier1_results")
+
+  tier2Results Json? @map("tier2_results")
+
+  modelVersion String? @map("model_version")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  deliverable FormatDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+
+  @@index([deliverableId, createdAt])
+  @@map("auto_review_results")
 }
 
 model DeliverableRejectionEvent {
