@@ -488,7 +488,11 @@ export class ParticipationService {
       deliverable.participation.campaign.status,
     );
 
-    if (deliverable.status !== FormatDeliverableStatus.draft_approved) {
+    const proofFillableStatuses: FormatDeliverableStatus[] = [
+      FormatDeliverableStatus.draft_approved,
+      FormatDeliverableStatus.proof_rejected,
+    ];
+    if (!proofFillableStatuses.includes(deliverable.status)) {
       throw new BadRequestException({
         code: "VALIDATION_ERROR",
         message: "Live proof can only be submitted after draft approval",
@@ -501,6 +505,7 @@ export class ParticipationService {
         livePostUrl: dto.livePostUrl.trim(),
         status: FormatDeliverableStatus.proof_under_review,
         liveSubmittedAt: new Date(),
+        rejectionReason: null,
       },
     });
 

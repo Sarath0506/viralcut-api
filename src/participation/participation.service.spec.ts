@@ -541,6 +541,34 @@ describe("ParticipationService", () => {
 
       expect(result.status).toBe(FormatDeliverableStatus.live_submitted);
     });
+
+    it("accepts a resubmission after proof_rejected and clears the old rejection reason", async () => {
+      prisma.formatDeliverable.findFirst.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.proof_rejected,
+        rejectionReason: "resubmit",
+        participation: {
+          creatorId: "creator-1",
+          campaign: { status: CampaignStatus.live },
+        },
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.proof_under_review,
+        livePostUrl: "https://instagram.com/reel/2",
+      });
+
+      const result = await service.submitLiveProof("creator-1", "d1", {
+        livePostUrl: "https://instagram.com/reel/2",
+      });
+
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ rejectionReason: null }),
+        }),
+      );
+      expect(result.status).toBe(FormatDeliverableStatus.proof_under_review);
+    });
   });
 
   describe("refreshDeliverableViews", () => {
