@@ -13,6 +13,7 @@ import {
 } from "@prisma/client";
 
 import { ActivityLogService } from "../activity/activity-log.service";
+import { AutoReviewService } from "../auto-review/auto-review.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
 import { ApifyService } from "../common/apify.service";
@@ -94,6 +95,7 @@ export class ParticipationService {
     private readonly activityLog: ActivityLogService,
     private readonly notifications: InAppNotificationService,
     private readonly creatorProfiles: CreatorProfilesService,
+    private readonly autoReview: AutoReviewService,
   ) {}
 
   private deliverableEventPayload(
@@ -500,6 +502,11 @@ export class ParticipationService {
     this.realtime.emitDeliverableLiveProof(
       this.deliverableEventPayload(updated, deliverable.participation),
     );
+
+    // Shadow-mode automated review — fire-and-forget, never awaited. Never
+    // changes this response, the deliverable's status, or the human review
+    // flow below; it only ever produces a logged AutoReviewResult row.
+    void this.autoReview.runPipeline(updated.id);
 
     return {
       id: updated.id,

@@ -84,6 +84,7 @@ describe("ParticipationService", () => {
       { log: async () => undefined } as never,
       { create: async () => undefined } as never,
       creatorProfiles as never,
+      { runPipeline: async () => undefined } as never,
     );
   });
 
