@@ -22,7 +22,8 @@ import { CreatorProfilesService } from "../creator-profiles/creator-profiles.ser
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
-import { DRAFT_URL_MESSAGE, isValidDraftUrl } from "./drive-url";
+import { FILLABLE_DELIVERABLE_STATUSES } from "./deliverable-status";
+import { DRAFT_URL_MESSAGE, isUploadedFileUrl, isValidDraftUrl } from "./drive-url";
 import { ReviewDeliverableAction } from "./dto/review-deliverable.dto";
 import type { SubmitDraftDto } from "./dto/submit-draft.dto";
 import type { SubmitLiveProofDto } from "./dto/submit-live-proof.dto";
@@ -396,11 +397,7 @@ export class ParticipationService {
       deliverable.participation.campaign.status,
     );
 
-    const resubmittable: FormatDeliverableStatus[] = [
-      FormatDeliverableStatus.draft_pending,
-      FormatDeliverableStatus.draft_rejected,
-    ];
-    if (!resubmittable.includes(deliverable.status)) {
+    if (!FILLABLE_DELIVERABLE_STATUSES.includes(deliverable.status)) {
       throw new BadRequestException({
         code: "VALIDATION_ERROR",
         message: "This format cannot accept a new draft right now",
@@ -415,6 +412,15 @@ export class ParticipationService {
     }
 
     const trimmedUrl = dto.draftDriveUrl.trim();
+
+    if (dto.listedInMarketplace && !isUploadedFileUrl(trimmedUrl)) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message:
+          "Listing in the marketplace needs your draft uploaded through the app, not a Google Drive link.",
+      });
+    }
+
     const lastRejected = deliverable.rejectionEvents[0];
     if (
       deliverable.status === FormatDeliverableStatus.draft_rejected &&
@@ -435,6 +441,7 @@ export class ParticipationService {
         status: FormatDeliverableStatus.under_review,
         rejectionReason: null,
         draftSubmittedAt: new Date(),
+        listedInMarketplace: dto.listedInMarketplace ?? false,
       },
     });
 

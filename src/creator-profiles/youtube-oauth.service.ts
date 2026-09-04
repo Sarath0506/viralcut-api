@@ -8,6 +8,7 @@ import { ConfigService } from "@nestjs/config";
 import { Prisma } from "@prisma/client";
 import {
   createCipheriv,
+  createDecipheriv,
   createHash,
   randomBytes,
 } from "node:crypto";
@@ -18,7 +19,9 @@ import { CreatorProfilesService } from "./creator-profiles.service";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const YOUTUBE_DATA_API = "https://www.googleapis.com/youtube/v3";
+const YOUTUBE_UPLOAD_API = "https://www.googleapis.com/upload/youtube/v3/videos";
 const YOUTUBE_CALLBACK_SCHEME = "halchal://youtube-callback";
+const YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload";
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -434,6 +437,151 @@ export class YoutubeOAuthService {
     return data;
   }
 
+  /** Returns a currently-valid access token for this profile's connected
+   * YouTube channel, refreshing it via the stored refresh token when it's
+   * close to expiring. Also verifies the connection was granted upload
+   * permission — connections made before youtube.upload was added to
+   * YOUTUBE_OAUTH_SCOPES predate it and need to reconnect. */
+  async getValidAccessToken(creatorProfileId: string): Promise<string> {
+    const connection = await this.prisma.youtubeConnection.findUnique({
+      where: { creatorProfileId },
+    });
+    if (!connection || !connection.isConnected) {
+      throw new ConflictException({
+        code: "YOUTUBE_NOT_CONNECTED",
+        message: "Connect a YouTube account before posting to it.",
+      });
+    }
+
+    const scopes =
+      ((connection.metadata as Record<string, unknown> | null)?.scopes as
+        | string[]
+        | undefined) ?? [];
+    if (!scopes.includes(YOUTUBE_UPLOAD_SCOPE)) {
+      throw new ConflictException({
+        code: "YOUTUBE_UPLOAD_SCOPE_MISSING",
+        message: "Reconnect your YouTube account to grant upload permission.",
+      });
+    }
+
+    const expiresAt = connection.tokenExpiresAt;
+    const needsRefresh = !expiresAt || expiresAt.getTime() - Date.now() < 5 * 60 * 1000;
+    if (!needsRefresh) {
+      return this.decrypt(connection.encryptedAccessToken);
+    }
+
+    if (!connection.encryptedRefreshToken) {
+      throw new ConflictException({
+        code: "YOUTUBE_REAUTH_REQUIRED",
+        message: "Reconnect your YouTube account to keep posting on your behalf.",
+      });
+    }
+
+    const refreshed = await this.refreshAccessToken(
+      this.decrypt(connection.encryptedRefreshToken),
+    );
+    await this.prisma.youtubeConnection.update({
+      where: { creatorProfileId },
+      data: {
+        encryptedAccessToken: this.encrypt(refreshed.accessToken),
+        tokenExpiresAt: refreshed.expiresAt,
+      },
+    });
+    return refreshed.accessToken;
+  }
+
+  private async refreshAccessToken(
+    refreshToken: string,
+  ): Promise<{ accessToken: string; expiresAt: Date }> {
+    const form = new URLSearchParams({
+      refresh_token: refreshToken,
+      client_id: this.googleClientId,
+      client_secret: this.googleClientSecret,
+      grant_type: "refresh_token",
+    });
+    const res = await fetch(GOOGLE_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const data = (await res.json().catch(() => ({}))) as GoogleTokenResponse;
+    if (!res.ok || !data.access_token || !data.expires_in) {
+      throw new ConflictException({
+        code: "YOUTUBE_REAUTH_REQUIRED",
+        message:
+          data.error_description ??
+          data.error ??
+          "Reconnect your YouTube account to keep posting on your behalf.",
+      });
+    }
+    return {
+      accessToken: data.access_token,
+      expiresAt: new Date(Date.now() + data.expires_in * 1000),
+    };
+  }
+
+  /** Uploads a video already hosted at a public `videoUrl` as a YouTube
+   * Short on this profile's connected channel via a single multipart
+   * request (metadata + video bytes in one call) — simpler than the full
+   * resumable-upload protocol, fine for short-form clips. Fetches the
+   * source video server-side first since `videoUrl` is our own R2-hosted
+   * file, not something YouTube can be pointed at directly the way
+   * Instagram's container API can. */
+  async uploadShort(
+    creatorProfileId: string,
+    videoUrl: string,
+    title: string,
+  ): Promise<{ permalink: string }> {
+    const accessToken = await this.getValidAccessToken(creatorProfileId);
+
+    const videoRes = await fetch(videoUrl, { signal: AbortSignal.timeout(60_000) });
+    if (!videoRes.ok || !videoRes.body) {
+      throw new BadGatewayException({
+        code: "YOUTUBE_SOURCE_MEDIA_UNAVAILABLE",
+        message: "Could not fetch the source video for upload.",
+      });
+    }
+    const videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+
+    const metadata = {
+      snippet: { title: title.slice(0, 100), description: title },
+      status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+    };
+    const boundary = `halchal-${randomBytes(16).toString("hex")}`;
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+          `--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`,
+        "utf8",
+      ),
+      videoBuffer,
+      Buffer.from(`\r\n--${boundary}--`, "utf8"),
+    ]);
+
+    const uploadRes = await fetch(`${YOUTUBE_UPLOAD_API}?uploadType=multipart&part=snippet,status`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+      signal: AbortSignal.timeout(120_000),
+    });
+    const data = (await uploadRes.json().catch(() => ({}))) as {
+      id?: string;
+      error?: { message?: string };
+    };
+    if (!uploadRes.ok || !data.id) {
+      throw new BadGatewayException({
+        code: "YOUTUBE_PUBLISH_FAILED",
+        message: data.error?.message ?? "YouTube upload failed.",
+      });
+    }
+
+    return { permalink: `https://www.youtube.com/shorts/${data.id}` };
+  }
+
   private toSocialStats(profile: YoutubeProfile) {
     return {
       platform: "youtube",
@@ -508,6 +656,26 @@ export class YoutubeOAuthService {
     const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
     const tag = cipher.getAuthTag();
     return `${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
+  }
+
+  private decrypt(value: string): string {
+    const [ivRaw, tagRaw, encryptedRaw] = value.split(".");
+    if (!ivRaw || !tagRaw || !encryptedRaw) {
+      throw new BadRequestException({
+        code: "YOUTUBE_TOKEN_INVALID",
+        message: "Stored YouTube token is invalid.",
+      });
+    }
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      this.encryptionKey,
+      Buffer.from(ivRaw, "base64url"),
+    );
+    decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+    return Buffer.concat([
+      decipher.update(Buffer.from(encryptedRaw, "base64url")),
+      decipher.final(),
+    ]).toString("utf8");
   }
 
   private get googleClientId(): string {

@@ -556,6 +556,8 @@ model Campaign {
 
   poolThresholdBps Int @default(8000) @map("pool_threshold_bps")
 
+  maxRepostsPerClip Int? @default(5) @map("max_reposts_per_clip")
+
   startDate DateTime? @map("start_date")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -889,6 +891,10 @@ model FormatDeliverable {
 
   paidAmountPaise Int? @map("paid_amount_paise")
 
+  listedInMarketplace Boolean @default(false) @map("listed_in_marketplace")
+
+  delistedAt DateTime? @map("delisted_at")
+
   updatedAt DateTime @updatedAt @map("updated_at")
 
   participation CampaignParticipation @relation(fields: [participationId], references: [id], onDelete: Cascade)
@@ -899,10 +905,39 @@ model FormatDeliverable {
 
   insightSnapshots DeliverableInsightSnapshot[]
 
+  marketplaceListingReposts MarketplaceRepost[] @relation("MarketplaceSource")
+
+  marketplaceRepostClaim MarketplaceRepost? @relation("MarketplacePoster")
+
   @@unique([participationId, platform])
   @@index([participationId])
   @@index([status])
+  @@index([listedInMarketplace, delistedAt])
   @@map("format_deliverables")
+}
+
+model MarketplaceRepost {
+  id String @id @default(cuid())
+
+  sourceDeliverableId String @map("source_deliverable_id")
+
+  posterDeliverableId String @unique @map("poster_deliverable_id")
+
+  posterCreatorId String @map("poster_creator_id")
+
+  originalCreatorSharePaise Int? @map("original_creator_share_paise")
+
+  posterSharePaise Int? @map("poster_share_paise")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sourceDeliverable FormatDeliverable @relation("MarketplaceSource", fields: [sourceDeliverableId], references: [id], onDelete: Cascade)
+
+  posterDeliverable FormatDeliverable @relation("MarketplacePoster", fields: [posterDeliverableId], references: [id], onDelete: Cascade)
+
+  @@index([sourceDeliverableId])
+  @@index([posterCreatorId, createdAt])
+  @@map("marketplace_reposts")
 }
 
 model DeliverableRejectionEvent {

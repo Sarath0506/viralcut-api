@@ -5,6 +5,7 @@ import * as bcrypt from "bcryptjs";
 import { ActivityLogService } from "../activity/activity-log.service";
 import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
+import { computeMarketplaceSplitPaise } from "../common/marketplace-split";
 import { PrismaService } from "../prisma/prisma.service";
 import { AdminRolesService } from "../admin-roles/admin-roles.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
@@ -12,6 +13,7 @@ import { FaqsService } from "../faqs/faqs.service";
 import { BulkNotificationService } from "../notifications/bulk-notification.service";
 import { EmailService } from "../notifications/email.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
+import { MarketplaceService } from "../marketplace/marketplace.service";
 import { computeParticipationSummary, isParticipationCompleted } from "../participation/participation-summary";
 import { RealtimeService } from "../realtime/realtime.service";
 import { SupportService } from "../support/support.service";
@@ -46,7 +48,15 @@ export class AdminService {
     private readonly bulkNotifications: BulkNotificationService,
     private readonly faqs: FaqsService,
     private readonly adminRoles: AdminRolesService,
+    private readonly marketplace: MarketplaceService,
   ) {}
+
+  /** Admin takedown of a marketplace listing — see MarketplaceService.delistListing
+   * for what this does and, just as importantly, what it deliberately doesn't
+   * touch (existing reposts and their payouts stand as-is). */
+  delistMarketplaceListing(deliverableId: string) {
+    return this.marketplace.delistListing(deliverableId);
+  }
 
   async listBrands() {
     const brands = await this.prisma.brandProfile.findMany({
@@ -922,6 +932,13 @@ export class AdminService {
             campaign: { select: { title: true, ratePer1kPaise: true, maxPayoutPaise: true, brandProfileId: true } },
           },
         },
+        marketplaceRepostClaim: {
+          include: {
+            sourceDeliverable: {
+              include: { participation: { select: { creatorId: true } } },
+            },
+          },
+        },
       },
     });
 
@@ -931,21 +948,64 @@ export class AdminService {
     for (const d of deliverables) {
       const { title, ratePer1kPaise, maxPayoutPaise, brandProfileId } = d.participation.campaign;
       const amountPaise = computeEstimatedPaise(d.viewCount, ratePer1kPaise, maxPayoutPaise);
+      const repost = d.marketplaceRepostClaim;
 
-      // Atomic compare-and-swap via the WHERE clause: only proceeds if still unpaid,
-      // so concurrent payout requests can never double-credit the same deliverable.
-      const { count } = await this.prisma.formatDeliverable.updateMany({
-        where: { id: d.id, paidAt: null },
-        data: { paidAt: new Date(), paidAmountPaise: amountPaise },
-      });
-      if (count === 0) continue;
+      let paidNow: boolean;
+      if (repost) {
+        // Marketplace-sourced deliverable: mark paid, split the capped amount
+        // 70/30, and credit both wallets atomically in one transaction —
+        // tighter than the non-marketplace path below, which accepts a small
+        // pre-existing non-atomicity gap between marking paid and crediting.
+        paidNow = await this.prisma.$transaction(async (tx) => {
+          const { count } = await tx.formatDeliverable.updateMany({
+            where: { id: d.id, paidAt: null },
+            data: { paidAt: new Date(), paidAmountPaise: amountPaise },
+          });
+          if (count === 0) return false;
 
-      await this.wallet.creditEarning(
-        d.participation.creatorId,
-        amountPaise,
-        d.id,
-        `Payout: ${title} (${d.platform})`,
-      );
+          const { posterSharePaise, originalCreatorSharePaise } =
+            computeMarketplaceSplitPaise(amountPaise);
+          const originalCreatorId = repost.sourceDeliverable.participation.creatorId;
+
+          await tx.marketplaceRepost.update({
+            where: { id: repost.id },
+            data: { posterSharePaise, originalCreatorSharePaise },
+          });
+          await this.wallet.creditEarningInTx(
+            tx,
+            d.participation.creatorId,
+            posterSharePaise,
+            d.id,
+            `Payout (marketplace repost): ${title} (${d.platform})`,
+          );
+          await this.wallet.creditEarningInTx(
+            tx,
+            originalCreatorId,
+            originalCreatorSharePaise,
+            repost.id,
+            `Marketplace repost share: ${title} (${d.platform})`,
+          );
+          return true;
+        });
+      } else {
+        // Atomic compare-and-swap via the WHERE clause: only proceeds if still unpaid,
+        // so concurrent payout requests can never double-credit the same deliverable.
+        const { count } = await this.prisma.formatDeliverable.updateMany({
+          where: { id: d.id, paidAt: null },
+          data: { paidAt: new Date(), paidAmountPaise: amountPaise },
+        });
+        paidNow = count > 0;
+        if (paidNow) {
+          await this.wallet.creditEarning(
+            d.participation.creatorId,
+            amountPaise,
+            d.id,
+            `Payout: ${title} (${d.platform})`,
+          );
+        }
+      }
+
+      if (!paidNow) continue;
 
       this.realtime.emitDeliverablePaid({
         deliverableId: d.id,
@@ -964,6 +1024,19 @@ export class AdminService {
         body: `${title} (${d.platform}) payout has landed in your wallet.`,
         link: "/wallet",
       });
+
+      if (repost) {
+        await this.notifications.create(
+          repost.sourceDeliverable.participation.creatorId,
+          "creator",
+          {
+            type: "payout_paid",
+            title: "Marketplace repost payout 💸",
+            body: `Your clip was reposted for ${title} (${d.platform}) — your share has landed in your wallet.`,
+            link: "/wallet",
+          },
+        );
+      }
 
       paidCount += 1;
       totalPaidPaise += amountPaise;

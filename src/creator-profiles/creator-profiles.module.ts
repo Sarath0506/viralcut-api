@@ -22,6 +22,6 @@ import { RealtimeModule } from "../realtime/realtime.module";
     YoutubeOAuthService,
     ApifyService,
   ],
-  exports: [CreatorProfilesService],
+  exports: [CreatorProfilesService, InstagramOAuthService, YoutubeOAuthService],
 })
 export class CreatorProfilesModule {}

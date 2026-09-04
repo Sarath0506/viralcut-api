@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { FormatDeliverableStatus } from "@prisma/client";
+import { FormatDeliverableStatus, Prisma } from "@prisma/client";
 
 import { computeEstimatedPaise } from "../common/earnings";
 import { PrismaService } from "../prisma/prisma.service";
@@ -106,32 +106,46 @@ export class WalletService {
     referenceId: string,
     note?: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.upsert({
-        where: { userId },
-        create: { userId },
-        update: {},
-      });
+    return this.prisma.$transaction((tx) =>
+      this.creditEarningInTx(tx, userId, amountPaise, referenceId, note),
+    );
+  }
 
-      const updated = await tx.wallet.update({
-        where: { id: wallet.id },
-        data: {
-          availablePaise: { increment: amountPaise },
-          lifetimePaise: { increment: amountPaise },
-        },
-      });
-
-      await tx.transaction.create({
-        data: {
-          walletId: wallet.id,
-          type: "earning_credit",
-          amountPaise,
-          referenceId,
-          note,
-        },
-      });
-
-      return updated;
+  /** Same as creditEarning, but runs inside a transaction the caller already
+   * holds open — for callers that need this credit to commit atomically
+   * alongside other writes (e.g. crediting both parties of a marketplace
+   * repost split together with the deliverable payout that produced it). */
+  async creditEarningInTx(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    amountPaise: number,
+    referenceId: string,
+    note?: string,
+  ) {
+    const wallet = await tx.wallet.upsert({
+      where: { userId },
+      create: { userId },
+      update: {},
     });
+
+    const updated = await tx.wallet.update({
+      where: { id: wallet.id },
+      data: {
+        availablePaise: { increment: amountPaise },
+        lifetimePaise: { increment: amountPaise },
+      },
+    });
+
+    await tx.transaction.create({
+      data: {
+        walletId: wallet.id,
+        type: "earning_credit",
+        amountPaise,
+        referenceId,
+        note,
+      },
+    });
+
+    return updated;
   }
 }

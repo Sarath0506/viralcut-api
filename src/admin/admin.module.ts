@@ -4,6 +4,7 @@ import { AdminRolesModule } from "../admin-roles/admin-roles.module";
 import { AuthModule } from "../auth/auth.module";
 import { CampaignsModule } from "../campaigns/campaigns.module";
 import { FaqsModule } from "../faqs/faqs.module";
+import { MarketplaceModule } from "../marketplace/marketplace.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { RealtimeModule } from "../realtime/realtime.module";
 import { StorageModule } from "../storage/storage.module";
@@ -18,6 +19,7 @@ import { AdminService } from "./admin.service";
     AuthModule,
     CampaignsModule,
     FaqsModule,
+    MarketplaceModule,
     NotificationsModule,
     RealtimeModule,
     StorageModule,

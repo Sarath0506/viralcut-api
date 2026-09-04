@@ -462,6 +462,12 @@ export class AdminController {
     return this.admin.payoutCampaign(campaignId, creatorId);
   }
 
+  @Post("marketplace/listings/:id/delist")
+  @AdminSectionRoute("campaigns")
+  delistMarketplaceListing(@Param("id") deliverableId: string) {
+    return this.admin.delistMarketplaceListing(deliverableId);
+  }
+
   @Patch("campaigns/:id/clipper-intake")
   @AdminSectionRoute("campaigns")
   setClipperIntake(

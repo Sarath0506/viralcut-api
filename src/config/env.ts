@@ -83,6 +83,14 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true" || v === "1"),
   INSTAGRAM_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  /** Gates Clip Marketplace reposts that publish to Instagram on a clipper's
+   * behalf. Default off — only enable once INSTAGRAM_APP_ID etc. point at an
+   * app with instagram_business_content_publish approved (or a dev-mode test
+   * user for sandbox testing). */
+  INSTAGRAM_PUBLISHING_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
   /** Google OAuth for creator YouTube social connection. */
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -90,9 +98,18 @@ const envSchema = z.object({
   YOUTUBE_OAUTH_SCOPES: z
     .string()
     .default(
-      "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly",
+      "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly https://www.googleapis.com/auth/youtube.upload",
     ),
   YOUTUBE_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  /** Gates Clip Marketplace reposts that upload to YouTube on a clipper's
+   * behalf. Default off, same reasoning as INSTAGRAM_PUBLISHING_ENABLED.
+   * Existing YouTube connections were granted before the youtube.upload
+   * scope existed — those creators must reconnect before their first
+   * repost regardless of this flag. */
+  YOUTUBE_PUBLISHING_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
   PAYOUT_ACCOUNT_ENCRYPTION_KEY: z.string().optional(),
   /** Firebase Admin SDK service account JSON, base64-encoded (one line —
    * Firebase Console > Project Settings > Service Accounts > Generate new
