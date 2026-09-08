@@ -28,10 +28,12 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { CampaignsService } from "./campaigns.service";
 import {
+  CheckSourceAssetUrlDto,
   CreateCampaignDto,
   UpdateCampaignDto,
   UpdateCampaignStepDto,
 } from "./dto/campaign.dto";
+import { checkMediaUrlFetchable } from "../auto-review/media-fetch";
 import { ListCampaignsQueryDto } from "./dto/list-campaigns-query.dto";
 import { assertVideoIsPlayable, UnsupportedVideoFormatError } from "./video-compatibility";
 
@@ -102,6 +104,12 @@ export class CampaignsController {
       ...(await this.storage.saveUploadedFile("reference-assets", file)),
       type,
     };
+  }
+
+  @Post("source-assets/check-url")
+  @HttpCode(HttpStatus.OK)
+  checkSourceAssetUrl(@Body() dto: CheckSourceAssetUrlDto) {
+    return checkMediaUrlFetchable(dto.url);
   }
 
   @Get()

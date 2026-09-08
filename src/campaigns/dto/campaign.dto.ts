@@ -1,9 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { CampaignStatus, CampaignWizardStep } from "@prisma/client";
+import { CampaignStatus, CampaignWizardStep, SourceAssetRequirement } from "@prisma/client";
 import { Type } from "class-transformer";
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsIn,
   IsEnum,
@@ -21,12 +22,12 @@ import { CAMPAIGN_PLATFORM_IDS } from "../campaign-platforms";
 import { CAMPAIGN_LOCATION_TYPES, INDIA_STATES } from "../india-states";
 
 export class SourceAssetDto {
-  @ApiProperty({ enum: ["drive", "youtube"] })
+  @ApiProperty({ enum: ["drive", "youtube", "upload"] })
   @IsString()
-  @IsIn(["drive", "youtube"])
-  type!: "drive" | "youtube";
+  @IsIn(["drive", "youtube", "upload"])
+  type!: "drive" | "youtube" | "upload";
 
-  @ApiProperty({ description: "Google Drive or YouTube URL" })
+  @ApiProperty({ description: "Google Drive/YouTube URL, or a public URL from a device upload" })
   @IsString()
   @MinLength(1)
   @MaxLength(2048)
@@ -56,6 +57,14 @@ export class ReferenceAssetDto {
   @IsString()
   @MaxLength(120)
   label?: string;
+}
+
+export class CheckSourceAssetUrlDto {
+  @ApiProperty({ description: "Google Drive/YouTube URL, or a public URL, to test for auto-review fetchability" })
+  @IsString()
+  @IsUrl()
+  @MaxLength(2048)
+  url!: string;
 }
 
 export class CreateCampaignDto {
@@ -143,6 +152,21 @@ export class CreateCampaignDto {
   @ValidateNested({ each: true })
   @Type(() => SourceAssetDto)
   sourceAssets?: SourceAssetDto[];
+
+  @ApiPropertyOptional({ enum: SourceAssetRequirement, default: SourceAssetRequirement.mandatory, description: "Whether clippers must reuse the source footage" })
+  @IsOptional()
+  @IsEnum(SourceAssetRequirement)
+  sourceVideoRequirement?: SourceAssetRequirement;
+
+  @ApiPropertyOptional({ enum: SourceAssetRequirement, default: SourceAssetRequirement.not_required, description: "Whether clippers must use the source audio/song" })
+  @IsOptional()
+  @IsEnum(SourceAssetRequirement)
+  sourceAudioRequirement?: SourceAssetRequirement;
+
+  @ApiPropertyOptional({ default: true, description: "Whether the automated review pipeline runs for this campaign's submissions" })
+  @IsOptional()
+  @IsBoolean()
+  autoReviewEnabled?: boolean;
 
   @ApiPropertyOptional({ type: [ReferenceAssetDto] })
   @IsOptional()
@@ -240,6 +264,21 @@ export class UpdateCampaignDto {
   @ValidateNested({ each: true })
   @Type(() => SourceAssetDto)
   sourceAssets?: SourceAssetDto[];
+
+  @ApiPropertyOptional({ enum: SourceAssetRequirement, description: "Whether clippers must reuse the source footage" })
+  @IsOptional()
+  @IsEnum(SourceAssetRequirement)
+  sourceVideoRequirement?: SourceAssetRequirement;
+
+  @ApiPropertyOptional({ enum: SourceAssetRequirement, description: "Whether clippers must use the source audio/song" })
+  @IsOptional()
+  @IsEnum(SourceAssetRequirement)
+  sourceAudioRequirement?: SourceAssetRequirement;
+
+  @ApiPropertyOptional({ description: "Whether the automated review pipeline runs for this campaign's submissions" })
+  @IsOptional()
+  @IsBoolean()
+  autoReviewEnabled?: boolean;
 
   @ApiPropertyOptional({ type: [ReferenceAssetDto] })
   @IsOptional()

@@ -56,6 +56,15 @@ class ReviewKycDto {
   reason?: string;
 }
 
+class ReviewInstagramOnboardingDto {
+  @IsEnum(["approve", "reject"])
+  action!: "approve" | "reject";
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
 class CreateBrandDto {
   @IsString()
   companyName!: string;
@@ -271,6 +280,12 @@ export class AdminController {
     return this.admin.listCreators();
   }
 
+  @Get("verifications")
+  @AdminSectionRoute("clippers")
+  listVerifications() {
+    return this.admin.listVerifications();
+  }
+
   @Get("creators/:id")
   @AdminSectionRoute("clippers")
   getCreator(@Param("id") id: string) {
@@ -281,6 +296,22 @@ export class AdminController {
   @AdminSectionRoute("clippers")
   reviewKyc(@Param("id") id: string, @Body() body: ReviewKycDto) {
     return this.admin.reviewKyc(id, body.action, body.reason);
+  }
+
+  @Post("creators/:id/instagram-review")
+  @AdminSectionRoute("clippers")
+  reviewInstagramOnboarding(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Body() body: ReviewInstagramOnboardingDto,
+  ) {
+    return this.admin.reviewInstagramOnboarding(id, body.action, body.reason, user.sub);
+  }
+
+  @Get("payout-methods/:id/reveal")
+  @AdminSectionRoute("clippers")
+  revealPayoutMethodAccountNumber(@CurrentUser() user: AuthJwtPayload, @Param("id") id: string) {
+    return this.admin.revealPayoutMethodAccountNumber(id, user.sub);
   }
 
   @Get("support-tickets")
@@ -460,6 +491,12 @@ export class AdminController {
     @Param("creatorId") creatorId: string,
   ) {
     return this.admin.payoutCampaign(campaignId, creatorId);
+  }
+
+  @Post("marketplace/listings/:id/delist")
+  @AdminSectionRoute("campaigns")
+  delistMarketplaceListing(@Param("id") deliverableId: string) {
+    return this.admin.delistMarketplaceListing(deliverableId);
   }
 
   @Patch("campaigns/:id/clipper-intake")

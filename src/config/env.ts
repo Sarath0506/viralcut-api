@@ -83,6 +83,14 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true" || v === "1"),
   INSTAGRAM_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  /** Gates Clip Marketplace reposts that publish to Instagram on a clipper's
+   * behalf. Default off — only enable once INSTAGRAM_APP_ID etc. point at an
+   * app with instagram_business_content_publish approved (or a dev-mode test
+   * user for sandbox testing). */
+  INSTAGRAM_PUBLISHING_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
   /** Google OAuth for creator YouTube social connection. */
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -90,10 +98,49 @@ const envSchema = z.object({
   YOUTUBE_OAUTH_SCOPES: z
     .string()
     .default(
-      "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly",
+      "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly https://www.googleapis.com/auth/youtube.upload",
     ),
   YOUTUBE_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+  /** Gates Clip Marketplace reposts that upload to YouTube on a clipper's
+   * behalf. Default off, same reasoning as INSTAGRAM_PUBLISHING_ENABLED.
+   * Existing YouTube connections were granted before the youtube.upload
+   * scope existed — those creators must reconnect before their first
+   * repost regardless of this flag. */
+  YOUTUBE_PUBLISHING_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
   PAYOUT_ACCOUNT_ENCRYPTION_KEY: z.string().optional(),
+  /** Gemini API key for the automated proof-of-work review pipeline's Tier 2
+   * content-compliance checks (draft and live-proof stages both use this). */
+  GEMINI_API_KEY: z.string().optional(),
+  /** Master switch for the whole automated proof-of-work review pipeline —
+   * both stages, both tiers. Default off: with no key configured or this
+   * unset, nothing runs and nothing is called. */
+  AUTO_REVIEW_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  /** When true, an `auto_approved`/`auto_rejected` decision actually applies
+   * — approving/rejecting the real deliverable, same as a human would,
+   * instead of only being logged. `needs_review` decisions are never
+   * enforced; a human always reviews those. Requires AUTO_REVIEW_ENABLED.
+   * Default off — shadow-mode logging only. */
+  AUTO_REVIEW_ENFORCE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  /** Cashfree Secure ID (Verification Suite) credentials — a separate
+   * product from Cashfree Payments; having one doesn't mean the other is
+   * active on the same account. Used for real PAN + Aadhaar verification
+   * during clipper signup. With no key configured, CashfreeVerificationService
+   * degrades to not-configured (same pattern as GeminiService/ApifyService),
+   * so nothing here is called until real credentials exist. */
+  CASHFREE_CLIENT_ID: z.string().optional(),
+  CASHFREE_CLIENT_SECRET: z.string().optional(),
+  /** "sandbox" (default) or "production" — selects which Cashfree base URL
+   * to call. Sandbox responses are mocked by Cashfree, not real lookups. */
+  CASHFREE_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
   /** Firebase Admin SDK service account JSON, base64-encoded (one line —
    * Firebase Console > Project Settings > Service Accounts > Generate new
    * private key, then `base64 -i key.json`). Unset = push notifications

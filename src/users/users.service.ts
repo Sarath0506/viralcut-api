@@ -3,12 +3,15 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import { KycStatus, Prisma, UserRole } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 
 import { ApifyService } from "../common/apify.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { CashfreeVerificationService } from "../verification/cashfree-verification.service";
 
 const BADGE_THRESHOLDS_PAISE = [
   { tier: "platinum", minPaise: 10_000_000 },
@@ -49,6 +52,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly apify: ApifyService,
+    private readonly cashfree: CashfreeVerificationService,
   ) {}
 
   async getMe(userId: string, role: UserRole) {
@@ -79,6 +83,22 @@ export class UsersService {
       bio: user.bio,
       socialLinks: (user.socialLinks as Record<string, string> | null) ?? null,
       socialStats: (user.socialStats as Record<string, unknown> | null) ?? null,
+      requiresOnboardingGate: user.requiresOnboardingGate,
+      // Instagram-only for now — PAN/Aadhaar auto-verification (via
+      // Cashfree) stays fully built and submittable, just not required to
+      // clear the gate, since the Cashfree account's balance is currently
+      // blocking real submissions. Re-add the PAN/Aadhaar conditions here
+      // once that's sorted and the mobile screen re-exposes those steps.
+      onboardingGateCleared:
+        !user.requiresOnboardingGate || user.instagramReviewStatus === KycStatus.verified,
+      onboarding: {
+        panStatus: user.panVerificationStatus,
+        panFailureReason: user.panFailureReason,
+        aadhaarStatus: user.aadhaarVerificationStatus,
+        aadhaarFailureReason: user.aadhaarFailureReason,
+        instagramReviewStatus: user.instagramReviewStatus,
+        instagramRejectionReason: user.instagramRejectionReason,
+      },
     };
 
     if (role === UserRole.brand && user.brandProfile) {
@@ -300,6 +320,101 @@ export class UsersService {
       kycStatus: updated.kycStatus,
       kycDocumentUrl: updated.kycDocumentUrl,
       kycSubmittedAt: updated.kycSubmittedAt?.toISOString() ?? null,
+    };
+  }
+
+  /** Real-time PAN verification for the signup gate, via Cashfree — a
+   * single synchronous call, so this goes straight from not_started to
+   * verified/rejected (no separate pending write in between). Accepting
+   * every "valid: true" PAN unconditionally would miss the actual fraud
+   * case that matters here: a real, active PAN number that just isn't
+   * this person's own (someone else's, found/stolen) — Cashfree's
+   * name_match_result is what actually tells the two apart, so this
+   * gates on that too, not just PAN validity alone. */
+  /** Real-time PAN verification for the signup gate, via Cashfree's Smart
+   * OCR against an uploaded photo (do_verification requests the real-time
+   * ITD lookup in the same call). Note: name_match here confirms the
+   * card's printed name matches its own ITD-registered name — proving the
+   * card is genuine — not that it belongs to this specific app user; there
+   * is no independent binding to the account holder's identity the way a
+   * typed-PAN + claimed-name comparison would give. */
+  async submitPan(userId: string, documentUrl: string, imageBuffer: Buffer, mimeType: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "User not found" });
+    }
+
+    const verificationId = `pan-${userId}-${randomUUID()}`.slice(0, 50);
+    const result = await this.cashfree.verifyPanByOcr(imageBuffer, mimeType, verificationId);
+    if (!result) {
+      throw new ServiceUnavailableException({
+        code: "VERIFICATION_UNAVAILABLE",
+        message: "Couldn't reach the verification service — please try again shortly.",
+      });
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        panDocumentUrl: documentUrl,
+        panNumber: result.valid ? result.panNumber : null,
+        panVerificationStatus: result.valid ? KycStatus.verified : KycStatus.rejected,
+        panVerifiedName: result.valid ? result.name : null,
+        panVerifiedAt: result.valid ? new Date() : null,
+        panFailureReason: result.valid ? null : result.reason,
+      },
+    });
+
+    return {
+      panVerificationStatus: updated.panVerificationStatus,
+      panFailureReason: updated.panFailureReason,
+    };
+  }
+
+  /** Real-time Aadhaar verification for the signup gate, via Cashfree's
+   * Smart OCR + QR check. Requires the QR to have actually verified
+   * (qrVerified) on top of the document itself being valid — a QR-less
+   * OCR-only read is a much weaker claim (just "this looks like a real
+   * card"), and the whole point of building this over the cheaper
+   * plausibility-check alternative was getting real, UIDAI-backed
+   * assurance, not settling for OCR alone. */
+  async submitAadhaar(userId: string, documentUrl: string, imageBuffer: Buffer, mimeType: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "User not found" });
+    }
+
+    const verificationId = `aadhaar-${userId}-${randomUUID()}`.slice(0, 50);
+    const result = await this.cashfree.verifyAadhaar(imageBuffer, mimeType, verificationId);
+    if (!result) {
+      throw new ServiceUnavailableException({
+        code: "VERIFICATION_UNAVAILABLE",
+        message: "Couldn't reach the verification service — please try again shortly.",
+      });
+    }
+
+    const verified = result.valid && result.qrVerified;
+    const failureReason = !result.valid
+      ? result.reason
+      : !verified
+        ? "Couldn't cryptographically verify this document's QR code — try a clearer, well-lit photo of the front"
+        : null;
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        aadhaarDocumentUrl: documentUrl,
+        aadhaarVerificationStatus: verified ? KycStatus.verified : KycStatus.rejected,
+        aadhaarVerifiedName: result.valid ? result.name : null,
+        aadhaarMaskedNumber: result.valid ? result.maskedNumber : null,
+        aadhaarVerifiedAt: verified ? new Date() : null,
+        aadhaarFailureReason: failureReason,
+      },
+    });
+
+    return {
+      aadhaarVerificationStatus: updated.aadhaarVerificationStatus,
+      aadhaarFailureReason: updated.aadhaarFailureReason,
     };
   }
 

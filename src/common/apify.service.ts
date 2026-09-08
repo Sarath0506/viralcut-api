@@ -10,6 +10,16 @@ export type PlatformViewResult = {
   platform: "instagram" | "youtube" | "twitter" | "unknown";
 };
 
+export type PostResolution =
+  | { status: "resolved" }
+  | { status: "not_found" }
+  | { status: "unresolved"; reason: string };
+
+export type PostAuthor = {
+  handle: string | null;
+  platformUserId: string | null;
+};
+
 export type SocialProfileStats = {
   platform: "instagram" | "youtube" | "twitter";
   handle: string;
@@ -73,11 +83,157 @@ export class ApifyService {
     }
   }
 
-  private detectPlatform(url: string): PlatformViewResult["platform"] {
+  detectPlatform(url: string): PlatformViewResult["platform"] {
     if (/instagram\.com/i.test(url)) return "instagram";
     if (/youtube\.com|youtu\.be/i.test(url)) return "youtube";
     if (/twitter\.com|x\.com/i.test(url)) return "twitter";
     return "unknown";
+  }
+
+  /** Checks whether a live post URL actually resolves to real, accessible
+   * content — for the auto-review pipeline's "resolves and is public" gate.
+   * Deliberately separate from getViewCount, which silently collapses every
+   * failure mode (bad config, network error, genuinely-missing post) into a
+   * zero-metrics result — a gate deciding auto-reject needs to tell those
+   * apart. Only Instagram (via HikerAPI) currently returns a distinguishable
+   * "this post doesn't exist" signal (`exc_type: "MediaNotFound"`); Apify
+   * actors for YouTube/Twitter just return an empty dataset for almost any
+   * failure (bad URL, rate limit, transient block), so those cases are
+   * reported as `unresolved` rather than a confident `not_found` — routing
+   * to needs_review, not an auto-reject, when we're not actually sure. */
+  async checkPostResolves(livePostUrl: string): Promise<PostResolution> {
+    const platform = this.detectPlatform(livePostUrl);
+    if (!this.isConfigured && !this.hikerApiKey) {
+      return { status: "unresolved", reason: "Scraping not configured" };
+    }
+
+    try {
+      if (platform === "instagram") {
+        if (!this.hikerApiKey) {
+          return { status: "unresolved", reason: "HIKERAPI_KEY not set" };
+        }
+        const res = await this.hikerApiRawGet("/v2/media/info/by/url", { url: livePostUrl });
+        if (res.status === 404 || res.body?.exc_type === "MediaNotFound") {
+          return { status: "not_found" };
+        }
+        if (!res.ok) {
+          return { status: "unresolved", reason: `HikerAPI returned ${res.status}` };
+        }
+        return { status: "resolved" };
+      }
+
+      if (platform === "youtube" || platform === "twitter") {
+        const actorId = platform === "youtube" ? ApifyService.ACTORS.youtube : ApifyService.ACTORS.twitter;
+        const input = platform === "youtube"
+          ? { startUrls: [{ url: livePostUrl }], maxResults: 1 }
+          : { startUrls: [livePostUrl], maxItems: 1 };
+        const items = await this.runActorAndGetDataset(actorId, input);
+        if (items.length === 0) {
+          return { status: "unresolved", reason: "Scraper returned no data — can't confirm not_found vs blocked" };
+        }
+        return { status: "resolved" };
+      }
+
+      return { status: "unresolved", reason: `Unrecognized platform for URL: ${livePostUrl}` };
+    } catch (err) {
+      return { status: "unresolved", reason: `Scrape error: ${err}` };
+    }
+  }
+
+  /** Best-effort extraction of who actually posted the live content, for the
+   * auto-review pipeline's ownership-verification gate. Field paths below
+   * follow the conventional Instagram-private-API / Apify-actor response
+   * shapes used across this whole ecosystem, but have NOT been empirically
+   * verified against a live successful response in this codebase — if the
+   * expected field is missing, this returns null (unresolved) rather than
+   * guessing, so a wrong assumption fails safe instead of silently. */
+  async getPostAuthor(livePostUrl: string): Promise<PostAuthor | null> {
+    const platform = this.detectPlatform(livePostUrl);
+    try {
+      if (platform === "instagram" && this.hikerApiKey) {
+        const res = await this.hikerApiRawGet("/v2/media/info/by/url", { url: livePostUrl });
+        const user = res.body?.media_or_ad?.user;
+        if (!user?.username && !user?.pk) return null;
+        return {
+          handle: user.username ?? null,
+          platformUserId: user.pk != null ? String(user.pk) : null,
+        };
+      }
+
+      if (platform === "youtube" && this.isConfigured) {
+        const items = await this.runActorAndGetDataset(ApifyService.ACTORS.youtube, {
+          startUrls: [{ url: livePostUrl }],
+          maxResults: 1,
+        });
+        const v = items[0];
+        const handle = v?.channelHandle ?? v?.channelName ?? null;
+        const channelId = v?.channelId ?? null;
+        if (!handle && !channelId) return null;
+        return { handle, platformUserId: channelId };
+      }
+
+      if (platform === "twitter" && this.isConfigured) {
+        const items = await this.runActorAndGetDataset(ApifyService.ACTORS.twitter, {
+          startUrls: [livePostUrl],
+          maxItems: 1,
+        });
+        const t = items[0];
+        const handle = t?.author?.userName ?? t?.author?.username ?? null;
+        const authorId = t?.author?.id ?? null;
+        if (!handle && !authorId) return null;
+        return { handle, platformUserId: authorId };
+      }
+
+      return null;
+    } catch (err) {
+      this.logger.warn(`getPostAuthor failed for ${livePostUrl}: ${err}`);
+      return null;
+    }
+  }
+
+  /** Best-effort fetch of the live post's actual media, for the auto-review
+   * pipeline's draft-vs-live comparison. Instagram-only for now — verified
+   * live against a real post that HikerAPI's media-info response includes
+   * `video_versions[N].url` (the real video file, preferred) and
+   * `image_versions2.candidates[N].url` (a static preview, fallback).
+   * YouTube/Twitter aren't attempted here — Apify's actors weren't verified
+   * to return an equally fetchable media URL, and guessing at unverified
+   * field names for this specific check isn't worth the false-confidence
+   * risk; those platforms stay unresolved for this gate. */
+  async getLivePostMedia(
+    livePostUrl: string,
+  ): Promise<{ kind: "video" | "image"; url: string } | null> {
+    if (this.detectPlatform(livePostUrl) !== "instagram" || !this.hikerApiKey) return null;
+    try {
+      const res = await this.hikerApiRawGet("/v2/media/info/by/url", { url: livePostUrl });
+      const media = res.body?.media_or_ad;
+      const videoUrl = media?.video_versions?.[0]?.url;
+      if (typeof videoUrl === "string") return { kind: "video", url: videoUrl };
+      const imageUrl = media?.image_versions2?.candidates?.[0]?.url;
+      if (typeof imageUrl === "string") return { kind: "image", url: imageUrl };
+      return null;
+    } catch (err) {
+      this.logger.warn(`getLivePostMedia failed for ${livePostUrl}: ${err}`);
+      return null;
+    }
+  }
+
+  /** Like hikerApiGet, but never throws — returns the status/body so callers
+   * can distinguish "not found" from other failures instead of only getting
+   * an Error either way. */
+  private async hikerApiRawGet(
+    path: string,
+    params: Record<string, string>,
+  ): Promise<{ ok: boolean; status: number; body: any }> {
+    const url = `https://api.hikerapi.com${path}?${new URLSearchParams(params).toString()}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    const res = await fetch(url, {
+      headers: { "x-access-key": this.hikerApiKey ?? "" },
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+    const body = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, body };
   }
 
   private async runActorAndGetDataset(actorId: string, input: object): Promise<any[]> {

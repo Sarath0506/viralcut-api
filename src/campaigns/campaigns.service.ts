@@ -11,6 +11,7 @@ import {
   CampaignWizardStep,
   NewClipperIntakeStatus,
   Prisma,
+  SourceAssetRequirement,
   StaffAccessLevel,
   UserRole,
 } from "@prisma/client";
@@ -244,6 +245,9 @@ export class CampaignsService {
         doRules: dto.doRules,
         avoidRules: dto.avoidRules,
         sourceAssets: dto.sourceAssets as Prisma.InputJsonValue | undefined,
+        sourceVideoRequirement: dto.sourceVideoRequirement,
+        sourceAudioRequirement: dto.sourceAudioRequirement,
+        autoReviewEnabled: dto.autoReviewEnabled,
         referenceAssets: dto.referenceAssets as Prisma.InputJsonValue | undefined,
         coverImageUrl: dto.coverImageUrl,
         productUrl: dto.productUrl,
@@ -353,6 +357,9 @@ export class CampaignsService {
         doRules: dto.doRules,
         avoidRules: dto.avoidRules,
         sourceAssets: dto.sourceAssets as Prisma.InputJsonValue | undefined,
+        sourceVideoRequirement: dto.sourceVideoRequirement,
+        sourceAudioRequirement: dto.sourceAudioRequirement,
+        autoReviewEnabled: dto.autoReviewEnabled,
         referenceAssets: dto.referenceAssets as Prisma.InputJsonValue | undefined,
         coverImageUrl: dto.coverImageUrl,
         platforms,
@@ -531,6 +538,8 @@ export class CampaignsService {
       doRules: campaign.doRules,
       avoidRules: campaign.avoidRules,
       sourceAssets: campaign.sourceAssets,
+      sourceVideoRequirement: campaign.sourceVideoRequirement,
+      sourceAudioRequirement: campaign.sourceAudioRequirement,
       referenceAssets: campaign.referenceAssets,
       coverImageUrl: campaign.coverImageUrl,
       productUrl: campaign.productUrl,
@@ -571,6 +580,9 @@ export class CampaignsService {
     doRules: string | null;
     avoidRules: string | null;
     sourceAssets: unknown;
+    sourceVideoRequirement?: SourceAssetRequirement;
+    sourceAudioRequirement?: SourceAssetRequirement;
+    autoReviewEnabled?: boolean;
     referenceAssets: unknown;
     coverImageUrl?: string | null;
     productUrl: string | null;
@@ -626,6 +638,9 @@ export class CampaignsService {
       doRules: c.doRules,
       avoidRules: c.avoidRules,
       sourceAssets: c.sourceAssets,
+      sourceVideoRequirement: c.sourceVideoRequirement ?? SourceAssetRequirement.mandatory,
+      sourceAudioRequirement: c.sourceAudioRequirement ?? SourceAssetRequirement.not_required,
+      autoReviewEnabled: c.autoReviewEnabled ?? true,
       referenceAssets: c.referenceAssets,
       coverImageUrl: c.coverImageUrl,
       productUrl: c.productUrl,

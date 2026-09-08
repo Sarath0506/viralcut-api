@@ -16,6 +16,7 @@ import {
   randomBytes,
 } from "node:crypto";
 
+import type { PlatformViewResult } from "../common/apify.service";
 import type { Env } from "../config/env";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreatorProfilesService } from "./creator-profiles.service";
@@ -110,6 +111,17 @@ function sha256(value: string): string {
 function tokenExpiry(expiresIn?: number): Date | null {
   if (!expiresIn || !Number.isFinite(expiresIn)) return null;
   return new Date(Date.now() + expiresIn * 1000);
+}
+
+/** Extracts the shortcode from an Instagram post/reel URL (the part that
+ * uniquely identifies it — e.g. "Cxyz123" from ".../reel/Cxyz123/?utm=..."),
+ * so a creator-submitted live post URL can be matched against the
+ * account's own media permalinks regardless of trailing slash, query
+ * params, or www./non-www. differences. Returns null for a URL that isn't
+ * a recognizable Instagram post/reel link. */
+function extractInstagramShortcode(url: string): string | null {
+  const match = url.match(/instagram\.com\/(?:[^/]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+  return match?.[1] ?? null;
 }
 
 function escapeHtml(value: string): string {
@@ -534,9 +546,10 @@ export class InstagramOAuthService {
 
   private async instagramGraphFetch<T extends { error?: InstagramGraphError }>(
     url: string,
+    init?: RequestInit,
   ): Promise<T> {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-    const data = (await res.json()) as T;
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000), ...init });
+    const data = (await res.json().catch(() => ({}))) as T;
     if (res.status === 429 || data.error?.code === 4 || data.error?.code === 613) {
       throw new ConflictException({
         code: "META_RATE_LIMITED",
@@ -550,6 +563,244 @@ export class InstagramOAuthService {
       });
     }
     return data;
+  }
+
+  /** Returns a currently-valid access token for this profile's connected
+   * Instagram account, transparently refreshing it via ig_refresh_token
+   * when it's within a week of expiring (Instagram long-lived tokens last
+   * ~60 days and don't use OAuth refresh tokens — they're refreshed by
+   * re-exchanging the current token itself). */
+  async getValidAccessToken(creatorProfileId: string): Promise<string> {
+    const connection = await this.prisma.instagramConnection.findUnique({
+      where: { creatorProfileId },
+    });
+    if (!connection || !connection.isConnected) {
+      throw new ConflictException({
+        code: "INSTAGRAM_NOT_CONNECTED",
+        message: "Connect an Instagram account before posting to it.",
+      });
+    }
+
+    const expiresAt = connection.tokenExpiresAt;
+    const needsRefresh =
+      !expiresAt || expiresAt.getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000;
+    if (!needsRefresh) {
+      return this.decrypt(connection.encryptedAccessToken);
+    }
+
+    const refreshed = await this.refreshAccessToken(
+      this.decrypt(connection.encryptedAccessToken),
+    );
+    await this.prisma.instagramConnection.update({
+      where: { creatorProfileId },
+      data: {
+        encryptedAccessToken: this.encrypt(refreshed.accessToken),
+        tokenExpiresAt: refreshed.expiresAt,
+        dataAccessExpiresAt: refreshed.expiresAt,
+      },
+    });
+    return refreshed.accessToken;
+  }
+
+  /** Real, first-party metrics for one specific live post via Instagram's
+   * official Insights API — used as a preferred alternative to the Apify
+   * scrape when the creator has connected their own Instagram account.
+   * Requires the connection's token to actually carry the
+   * instagram_business_manage_insights scope, which only creators who
+   * *reconnected* after that scope was added to INSTAGRAM_OAUTH_SCOPES will
+   * have — an existing connection from before that change doesn't
+   * retroactively gain it. Returns null on any failure (no connection,
+   * insufficient permission, the post isn't among the account's recent
+   * media, network error) so callers can fall back to the existing Apify
+   * path rather than break the view-refresh flow. */
+  async getMediaInsightsForPost(
+    creatorProfileId: string,
+    livePostUrl: string,
+  ): Promise<PlatformViewResult | null> {
+    const targetShortcode = extractInstagramShortcode(livePostUrl);
+    if (!targetShortcode) return null;
+
+    const connection = await this.prisma.instagramConnection.findUnique({
+      where: { creatorProfileId },
+    });
+    if (!connection || !connection.isConnected) return null;
+
+    try {
+      const accessToken = await this.getValidAccessToken(creatorProfileId);
+      const token = encodeURIComponent(accessToken);
+
+      // Only the account's own most-recent media is searched — same
+      // 25-item window fetchProfileAndMedia uses. A post that's fallen out
+      // of that window (many newer posts since) won't be found here and
+      // falls back to Apify, same as a post from an unconnected account.
+      const mediaRes = await this.instagramGraphFetch<InstagramMediaResponse>(
+        `${this.graphBase}/${encodeURIComponent(connection.platformUserId)}/media?fields=id,permalink&limit=25&access_token=${token}`,
+      );
+      const match = (mediaRes.data ?? []).find(
+        (m) => m.permalink && extractInstagramShortcode(m.permalink) === targetShortcode,
+      );
+      if (!match) {
+        this.logger.warn(`No Instagram media match for ${livePostUrl} in profile ${creatorProfileId}'s recent posts`);
+        return null;
+      }
+
+      const metricsRes = await this.instagramGraphFetch<{
+        data?: Array<{
+          name: string;
+          values?: Array<{ value: number }>;
+          total_value?: { value: number };
+        }>;
+        error?: InstagramGraphError;
+      }>(
+        `${this.graphBase}/${encodeURIComponent(match.id)}/insights?metric=reach,likes,comments,shares,saved,views&access_token=${token}`,
+      );
+      if (!metricsRes.data) return null;
+
+      const metricValue = (name: string): number => {
+        const entry = metricsRes.data!.find((m) => m.name === name);
+        return entry?.total_value?.value ?? entry?.values?.[0]?.value ?? 0;
+      };
+
+      return {
+        viewCount: metricValue("views"),
+        reach: metricValue("reach"),
+        likeCount: metricValue("likes"),
+        commentCount: metricValue("comments"),
+        shareCount: metricValue("shares"),
+        platform: "instagram",
+      };
+    } catch (err) {
+      this.logger.warn(`Instagram Insights fetch failed for ${livePostUrl}: ${err}`);
+      return null;
+    }
+  }
+
+  private async refreshAccessToken(
+    currentAccessToken: string,
+  ): Promise<{ accessToken: string; expiresAt: Date | null }> {
+    const params = new URLSearchParams({
+      grant_type: "ig_refresh_token",
+      access_token: currentAccessToken,
+    });
+    const res = await fetch(
+      `https://graph.instagram.com/refresh_access_token?${params.toString()}`,
+      { signal: AbortSignal.timeout(15_000) },
+    );
+    const data = (await res.json().catch(() => ({}))) as InstagramLongTokenResponse;
+    if (!res.ok || data.error || !data.access_token) {
+      throw new ConflictException({
+        code: "INSTAGRAM_REAUTH_REQUIRED",
+        message:
+          data.error?.message ?? "Reconnect your Instagram account to keep posting on your behalf.",
+      });
+    }
+    return { accessToken: data.access_token, expiresAt: tokenExpiry(data.expires_in) };
+  }
+
+  /** Publishes a video already hosted at a public `videoUrl` as an Instagram
+   * Reel on this profile's connected account: create a media container,
+   * poll until Instagram finishes processing it, publish, then read back
+   * the permalink. Bounded to ~100s of polling — there's no job queue in
+   * this codebase to hand a longer wait off to. */
+  async publishReel(
+    creatorProfileId: string,
+    videoUrl: string,
+    caption: string,
+  ): Promise<{ permalink: string }> {
+    const connection = await this.prisma.instagramConnection.findUnique({
+      where: { creatorProfileId },
+      select: { platformUserId: true },
+    });
+    if (!connection) {
+      throw new ConflictException({
+        code: "INSTAGRAM_NOT_CONNECTED",
+        message: "Connect an Instagram account before posting to it.",
+      });
+    }
+    const accessToken = await this.getValidAccessToken(creatorProfileId);
+    const igUserId = connection.platformUserId;
+
+    const containerParams = new URLSearchParams({
+      media_type: "REELS",
+      video_url: videoUrl,
+      caption,
+      share_to_feed: "true",
+      access_token: accessToken,
+    });
+    const container = await this.instagramGraphFetch<{ id?: string; error?: InstagramGraphError }>(
+      `${this.graphBase}/${encodeURIComponent(igUserId)}/media`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: containerParams.toString(),
+      },
+    );
+    if (!container.id) {
+      throw new BadGatewayException({
+        code: "INSTAGRAM_PUBLISH_FAILED",
+        message: "Instagram did not return a media container id.",
+      });
+    }
+
+    await this.pollContainerReady(container.id, accessToken);
+
+    const publishParams = new URLSearchParams({
+      creation_id: container.id,
+      access_token: accessToken,
+    });
+    const published = await this.instagramGraphFetch<{ id?: string; error?: InstagramGraphError }>(
+      `${this.graphBase}/${encodeURIComponent(igUserId)}/media_publish`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: publishParams.toString(),
+      },
+    );
+    if (!published.id) {
+      throw new BadGatewayException({
+        code: "INSTAGRAM_PUBLISH_FAILED",
+        message: "Instagram did not return a published media id.",
+      });
+    }
+
+    const permalinkRes = await this.instagramGraphFetch<{
+      permalink?: string;
+      error?: InstagramGraphError;
+    }>(
+      `${this.graphBase}/${encodeURIComponent(published.id)}?fields=permalink&access_token=${encodeURIComponent(accessToken)}`,
+    );
+    if (!permalinkRes.permalink) {
+      throw new BadGatewayException({
+        code: "INSTAGRAM_PUBLISH_FAILED",
+        message: "Instagram did not return a permalink for the published media.",
+      });
+    }
+    return { permalink: permalinkRes.permalink };
+  }
+
+  private async pollContainerReady(containerId: string, accessToken: string): Promise<void> {
+    const maxAttempts = 20;
+    const intervalMs = 5_000;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const status = await this.instagramGraphFetch<{
+        status_code?: string;
+        error?: InstagramGraphError;
+      }>(
+        `${this.graphBase}/${encodeURIComponent(containerId)}?fields=status_code&access_token=${encodeURIComponent(accessToken)}`,
+      );
+      if (status.status_code === "FINISHED") return;
+      if (status.status_code === "ERROR" || status.status_code === "EXPIRED") {
+        throw new BadGatewayException({
+          code: "INSTAGRAM_PUBLISH_FAILED",
+          message: `Instagram media processing failed (${status.status_code}).`,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new BadGatewayException({
+      code: "INSTAGRAM_PUBLISH_TIMEOUT",
+      message: "Instagram media processing took too long. Try again shortly.",
+    });
   }
 
   private toSocialStats(insights: InstagramInsights) {

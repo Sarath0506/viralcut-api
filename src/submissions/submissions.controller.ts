@@ -4,9 +4,14 @@ import {
   Get,
   Param,
   Patch,
+  Post,
   Query,
+  Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   FormatDeliverableStatus,
@@ -14,6 +19,7 @@ import {
   UserRole,
 } from "@prisma/client";
 import { IsString, MaxLength } from "class-validator";
+import { memoryStorage } from "multer";
 
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
@@ -22,6 +28,7 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import type { AuthJwtPayload } from "../auth/auth.types";
 import { ReviewDeliverableDto } from "../participation/dto/review-deliverable.dto";
 import { ParticipationService } from "../participation/participation.service";
+import { ObjectStorageService } from "../storage/object-storage.service";
 import { ReviewSubmissionDto } from "./dto/review-submission.dto";
 import { SubmissionsService } from "./submissions.service";
 
@@ -40,6 +47,7 @@ export class SubmissionsController {
   constructor(
     private readonly submissions: SubmissionsService,
     private readonly participation: ParticipationService,
+    private readonly storage: ObjectStorageService,
   ) {}
 
   @Get("stats")
@@ -83,6 +91,11 @@ export class SubmissionsController {
     return this.participation.getDeliverableForBrand(user.sub, user.role, id);
   }
 
+  @Post("deliverables/:id/refresh-views")
+  refreshDeliverableViews(@CurrentUser() user: AuthJwtPayload, @Param("id") id: string) {
+    return this.participation.refreshDeliverableViewsForBrand(user.sub, user.role, id);
+  }
+
   @Patch("deliverables/:id/review")
   reviewDeliverable(
     @CurrentUser() user: AuthJwtPayload,
@@ -96,6 +109,35 @@ export class SubmissionsController {
       dto.action,
       dto.rejectionReason,
     );
+  }
+
+  /** Lets a brand/admin/staff reviewer upload their own copy of a
+   * Drive-linked draft — the auto-review pipeline can't fetch Drive links
+   * itself, so it stays needs_review until someone with view access on the
+   * Drive file downloads it and re-uploads it here. Re-triggers the
+   * pipeline immediately if the deliverable is still awaiting review. */
+  @Post("deliverables/:id/admin-draft-copy")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 500 * 1024 * 1024 },
+    }),
+  )
+  async uploadAdminDraftCopy(
+    @CurrentUser() user: AuthJwtPayload,
+    @Param("id") id: string,
+    @Req() req: import("express").Request,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const result = await this.storage.saveUploadedFile("admin-draft-copies", {
+      buffer: file.buffer,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    });
+    const url = result.url.startsWith("http")
+      ? result.url
+      : `${req.protocol}://${req.get("host")}${result.url}`;
+    return this.participation.setAdminDraftCopy(user.sub, user.role, id, url);
   }
 
   @Patch("deliverables/:id/approve-proof")

@@ -227,7 +227,15 @@ export class AuthService {
             displayName: dto.displayName,
             username: dto.username,
             email: dto.email?.toLowerCase(),
+            requiresOnboardingGate: true,
             wallet: { create: {} },
+            // A placeholder profile so the signup-verification gate's
+            // Instagram OAuth step has something to attach to immediately —
+            // complete() overwrites handle/socialLinks with the real
+            // connected account the moment OAuth finishes.
+            creatorProfiles: {
+              create: { platform: "instagram", handle: phone, isDefault: true },
+            },
           },
           include: { wallet: true },
         });

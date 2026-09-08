@@ -5,6 +5,7 @@ import * as bcrypt from "bcryptjs";
 import { ActivityLogService } from "../activity/activity-log.service";
 import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
+import { computeMarketplaceSplitPaise } from "../common/marketplace-split";
 import { PrismaService } from "../prisma/prisma.service";
 import { AdminRolesService } from "../admin-roles/admin-roles.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
@@ -12,6 +13,8 @@ import { FaqsService } from "../faqs/faqs.service";
 import { BulkNotificationService } from "../notifications/bulk-notification.service";
 import { EmailService } from "../notifications/email.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
+import { MarketplaceService } from "../marketplace/marketplace.service";
+import { PayoutsService } from "../payouts/payouts.service";
 import { computeParticipationSummary, isParticipationCompleted } from "../participation/participation-summary";
 import { RealtimeService } from "../realtime/realtime.service";
 import { SupportService } from "../support/support.service";
@@ -46,7 +49,23 @@ export class AdminService {
     private readonly bulkNotifications: BulkNotificationService,
     private readonly faqs: FaqsService,
     private readonly adminRoles: AdminRolesService,
+    private readonly marketplace: MarketplaceService,
+    private readonly payouts: PayoutsService,
   ) {}
+
+  /** Decrypts a creator's real bank account number for an admin — payouts
+   * are being sent manually right now, so an admin genuinely needs this to
+   * actually wire money, not just see the masked "•••• 6666". */
+  revealPayoutMethodAccountNumber(methodId: string, adminUserId: string) {
+    return this.payouts.revealAccountNumberForAdmin(methodId, adminUserId);
+  }
+
+  /** Admin takedown of a marketplace listing — see MarketplaceService.delistListing
+   * for what this does and, just as importantly, what it deliberately doesn't
+   * touch (existing reposts and their payouts stand as-is). */
+  delistMarketplaceListing(deliverableId: string) {
+    return this.marketplace.delistListing(deliverableId);
+  }
 
   async listBrands() {
     const brands = await this.prisma.brandProfile.findMany({
@@ -537,6 +556,40 @@ export class AdminService {
     }));
   }
 
+  async listVerifications() {
+    const creators = await this.prisma.user.findMany({
+      where: {
+        role: UserRole.creator,
+        OR: [{ requiresOnboardingGate: true }, { instagramReviewStatus: { not: KycStatus.not_started } }],
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return creators.map((c) => {
+      // Instagram-only gate for now — see users.service.ts's
+      // onboardingGateCleared comment. PAN/Aadhaar status is intentionally
+      // not factored in here even though it's still collected on the
+      // backend, so this list matches what actually blocks a signup.
+      const overallStatus: "approved" | "rejected" | "pending" =
+        c.instagramReviewStatus === KycStatus.rejected
+          ? "rejected"
+          : c.instagramReviewStatus === KycStatus.verified
+            ? "approved"
+            : "pending";
+      const updatedAt = c.instagramReviewedAt ?? c.createdAt;
+
+      return {
+        id: c.id,
+        displayName: c.displayName,
+        username: c.username,
+        avatarUrl: c.avatarUrl,
+        instagramReviewStatus: c.instagramReviewStatus,
+        overallStatus,
+        updatedAt: updatedAt.toISOString(),
+      };
+    });
+  }
+
   async listCreators() {
     const creators = await this.prisma.user.findMany({
       where: { role: UserRole.creator },
@@ -569,7 +622,7 @@ export class AdminService {
       throw new NotFoundException({ code: "NOT_FOUND", message: "Creator not found" });
     }
 
-    const [wallet, payoutMethods, withdrawals, participations, linkedProfiles] = await Promise.all([
+    const [wallet, payoutMethods, withdrawals, participations, linkedProfiles, instagramConnections] = await Promise.all([
       this.prisma.wallet.findUnique({ where: { userId: creatorId } }),
       this.prisma.payoutMethod.findMany({
         where: { userId: creatorId },
@@ -594,6 +647,10 @@ export class AdminService {
       this.prisma.creatorProfile.findMany({
         where: { userId: creatorId },
         orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+      }),
+      this.prisma.instagramConnection.findMany({
+        where: { userId: creatorId },
+        orderBy: { createdAt: "desc" },
       }),
     ]);
 
@@ -644,6 +701,39 @@ export class AdminService {
       kycDocumentType: creator.kycDocumentType,
       kycSubmittedAt: creator.kycSubmittedAt?.toISOString() ?? null,
       kycRejectionReason: creator.kycRejectionReason,
+      requiresOnboardingGate: creator.requiresOnboardingGate,
+      pan: {
+        number: creator.panNumber,
+        documentUrl: creator.panDocumentUrl,
+        verificationStatus: creator.panVerificationStatus,
+        verifiedName: creator.panVerifiedName,
+        verifiedAt: creator.panVerifiedAt?.toISOString() ?? null,
+        failureReason: creator.panFailureReason,
+      },
+      aadhaar: {
+        documentUrl: creator.aadhaarDocumentUrl,
+        verificationStatus: creator.aadhaarVerificationStatus,
+        verifiedName: creator.aadhaarVerifiedName,
+        maskedNumber: creator.aadhaarMaskedNumber,
+        verifiedAt: creator.aadhaarVerifiedAt?.toISOString() ?? null,
+        failureReason: creator.aadhaarFailureReason,
+      },
+      instagramReview: {
+        status: creator.instagramReviewStatus,
+        reviewedAt: creator.instagramReviewedAt?.toISOString() ?? null,
+        rejectionReason: creator.instagramRejectionReason,
+      },
+      instagramConnections: instagramConnections.map((c) => ({
+        id: c.id,
+        platformHandle: c.platformHandle,
+        followerCount: c.followerCount,
+        followsCount: c.followsCount,
+        mediaCount: c.mediaCount,
+        engagementRate: c.engagementRate,
+        profilePictureUrl: c.profilePictureUrl,
+        isConnected: c.isConnected,
+        lastSyncedAt: c.lastSyncedAt.toISOString(),
+      })),
       isActive: creator.isActive,
       createdAt: creator.createdAt.toISOString(),
       linkedProfiles: linkedProfiles.map((p) => ({
@@ -665,8 +755,9 @@ export class AdminService {
         type: m.type,
         label: m.label,
         accountHolderName: m.accountHolderName,
-        accountNumber: m.accountNumber,
         ifscCode: m.ifscCode,
+        bankName: m.bankName,
+        panNumber: m.panNumber,
         accountMasked: m.accountMasked,
         isDefault: m.isDefault,
       })),
@@ -723,8 +814,51 @@ export class AdminService {
           : `Your KYC submission was rejected: ${reason!.trim()}`,
       link: "/profile/kyc",
     });
+    this.realtime.emitKycStatusUpdated(creatorId);
 
     return { id: updated.id, kycStatus: updated.kycStatus };
+  }
+
+  async reviewInstagramOnboarding(
+    creatorId: string,
+    action: "approve" | "reject",
+    reason: string | undefined,
+    reviewedByUserId: string,
+  ) {
+    const creator = await this.prisma.user.findUnique({ where: { id: creatorId } });
+    if (!creator || creator.role !== UserRole.creator) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Creator not found" });
+    }
+    if (action === "reject" && !reason?.trim()) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "reason required when rejecting",
+      });
+    }
+
+    const status = action === "approve" ? KycStatus.verified : KycStatus.rejected;
+    const updated = await this.prisma.user.update({
+      where: { id: creatorId },
+      data: {
+        instagramReviewStatus: status,
+        instagramReviewedAt: new Date(),
+        instagramReviewedByUserId: reviewedByUserId,
+        instagramRejectionReason: action === "reject" ? reason!.trim() : null,
+      },
+    });
+
+    await this.notifications.create(creatorId, "creator", {
+      type: action === "approve" ? "instagram_review_verified" : "instagram_review_rejected",
+      title: action === "approve" ? "Instagram verified ✅" : "Instagram review needs attention",
+      body:
+        action === "approve"
+          ? "Your Instagram account has been verified."
+          : `Your Instagram verification was rejected: ${reason!.trim()}`,
+      link: "/profile/verification",
+    });
+    this.realtime.emitOnboardingVerificationUpdated(creatorId);
+
+    return { id: updated.id, instagramReviewStatus: updated.instagramReviewStatus };
   }
 
   listSupportTickets(status?: SupportTicketStatus) {
@@ -922,6 +1056,13 @@ export class AdminService {
             campaign: { select: { title: true, ratePer1kPaise: true, maxPayoutPaise: true, brandProfileId: true } },
           },
         },
+        marketplaceRepostClaim: {
+          include: {
+            sourceDeliverable: {
+              include: { participation: { select: { creatorId: true } } },
+            },
+          },
+        },
       },
     });
 
@@ -931,21 +1072,64 @@ export class AdminService {
     for (const d of deliverables) {
       const { title, ratePer1kPaise, maxPayoutPaise, brandProfileId } = d.participation.campaign;
       const amountPaise = computeEstimatedPaise(d.viewCount, ratePer1kPaise, maxPayoutPaise);
+      const repost = d.marketplaceRepostClaim;
 
-      // Atomic compare-and-swap via the WHERE clause: only proceeds if still unpaid,
-      // so concurrent payout requests can never double-credit the same deliverable.
-      const { count } = await this.prisma.formatDeliverable.updateMany({
-        where: { id: d.id, paidAt: null },
-        data: { paidAt: new Date(), paidAmountPaise: amountPaise },
-      });
-      if (count === 0) continue;
+      let paidNow: boolean;
+      if (repost) {
+        // Marketplace-sourced deliverable: mark paid, split the capped amount
+        // 70/30, and credit both wallets atomically in one transaction —
+        // tighter than the non-marketplace path below, which accepts a small
+        // pre-existing non-atomicity gap between marking paid and crediting.
+        paidNow = await this.prisma.$transaction(async (tx) => {
+          const { count } = await tx.formatDeliverable.updateMany({
+            where: { id: d.id, paidAt: null },
+            data: { paidAt: new Date(), paidAmountPaise: amountPaise },
+          });
+          if (count === 0) return false;
 
-      await this.wallet.creditEarning(
-        d.participation.creatorId,
-        amountPaise,
-        d.id,
-        `Payout: ${title} (${d.platform})`,
-      );
+          const { posterSharePaise, originalCreatorSharePaise } =
+            computeMarketplaceSplitPaise(amountPaise);
+          const originalCreatorId = repost.sourceDeliverable.participation.creatorId;
+
+          await tx.marketplaceRepost.update({
+            where: { id: repost.id },
+            data: { posterSharePaise, originalCreatorSharePaise },
+          });
+          await this.wallet.creditEarningInTx(
+            tx,
+            d.participation.creatorId,
+            posterSharePaise,
+            d.id,
+            `Payout (marketplace repost): ${title} (${d.platform})`,
+          );
+          await this.wallet.creditEarningInTx(
+            tx,
+            originalCreatorId,
+            originalCreatorSharePaise,
+            repost.id,
+            `Marketplace repost share: ${title} (${d.platform})`,
+          );
+          return true;
+        });
+      } else {
+        // Atomic compare-and-swap via the WHERE clause: only proceeds if still unpaid,
+        // so concurrent payout requests can never double-credit the same deliverable.
+        const { count } = await this.prisma.formatDeliverable.updateMany({
+          where: { id: d.id, paidAt: null },
+          data: { paidAt: new Date(), paidAmountPaise: amountPaise },
+        });
+        paidNow = count > 0;
+        if (paidNow) {
+          await this.wallet.creditEarning(
+            d.participation.creatorId,
+            amountPaise,
+            d.id,
+            `Payout: ${title} (${d.platform})`,
+          );
+        }
+      }
+
+      if (!paidNow) continue;
 
       this.realtime.emitDeliverablePaid({
         deliverableId: d.id,
@@ -964,6 +1148,19 @@ export class AdminService {
         body: `${title} (${d.platform}) payout has landed in your wallet.`,
         link: "/wallet",
       });
+
+      if (repost) {
+        await this.notifications.create(
+          repost.sourceDeliverable.participation.creatorId,
+          "creator",
+          {
+            type: "payout_paid",
+            title: "Marketplace repost payout 💸",
+            body: `Your clip was reposted for ${title} (${d.platform}) — your share has landed in your wallet.`,
+            link: "/wallet",
+          },
+        );
+      }
 
       paidCount += 1;
       totalPaidPaise += amountPaise;

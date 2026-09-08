@@ -200,6 +200,58 @@ export class UsersController {
     return this.users.submitKyc(user.sub, url, documentType ?? "id_proof");
   }
 
+  @Post("me/pan")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  async submitPan(
+    @CurrentUser() user: AuthJwtPayload,
+    @Req() req: import("express").Request,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file?.buffer) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "File is required" });
+    }
+    const result = await this.storage.saveUploadedFile("pan-documents", {
+      buffer: file.buffer,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    });
+    const url = result.url.startsWith("http")
+      ? result.url
+      : `${req.protocol}://${req.get("host")}${result.url}`;
+    return this.users.submitPan(user.sub, url, file.buffer, file.mimetype);
+  }
+
+  @Post("me/aadhaar")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  async submitAadhaar(
+    @CurrentUser() user: AuthJwtPayload,
+    @Req() req: import("express").Request,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file?.buffer) {
+      throw new BadRequestException({ code: "VALIDATION_ERROR", message: "File is required" });
+    }
+    const result = await this.storage.saveUploadedFile("aadhaar-documents", {
+      buffer: file.buffer,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+    });
+    const url = result.url.startsWith("http")
+      ? result.url
+      : `${req.protocol}://${req.get("host")}${result.url}`;
+    return this.users.submitAadhaar(user.sub, url, file.buffer, file.mimetype);
+  }
+
   @Post("me/device-token")
   async registerDeviceToken(
     @CurrentUser() user: AuthJwtPayload,

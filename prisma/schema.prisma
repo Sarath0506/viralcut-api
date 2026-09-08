@@ -108,6 +108,28 @@ enum FormatDeliverableStatus {
   proof_rejected
 }
 
+enum AutoReviewDecision {
+  auto_approved
+
+  auto_rejected
+
+  needs_review
+}
+
+enum AutoReviewStage {
+  draft
+
+  proof
+}
+
+enum SourceAssetRequirement {
+  mandatory
+
+  optional
+
+  not_required
+}
+
 enum TransactionType {
   earning_credit
 
@@ -216,6 +238,52 @@ model User {
   kycReviewedAt DateTime? @map("kyc_reviewed_at")
 
   kycRejectionReason String? @map("kyc_rejection_reason")
+
+  // Signup verification gate (PAN + Aadhaar auto-verified via Cashfree,
+  // Instagram manually reviewed by an admin) — a newer, separate flow
+  // from the generic kyc* fields above. Only enforced for accounts where
+  // requiresOnboardingGate is true; existing users at the time this
+  // shipped are grandfathered in with it false, so they're never
+  // retroactively locked out.
+  requiresOnboardingGate Boolean @default(false) @map("requires_onboarding_gate")
+
+  panNumber String? @map("pan_number")
+
+  panDocumentUrl String? @map("pan_document_url")
+
+  panVerificationStatus KycStatus @default(not_started) @map("pan_verification_status")
+
+  panVerifiedName String? @map("pan_verified_name")
+
+  panVerifiedAt DateTime? @map("pan_verified_at")
+
+  panFailureReason String? @map("pan_failure_reason")
+
+  // The uploaded Aadhaar image is kept only long enough to run the OCR
+  // verification call — see CashfreeVerificationService — never the raw
+  // Aadhaar number itself, only a masked last-4 reference.
+  aadhaarDocumentUrl String? @map("aadhaar_document_url")
+
+  aadhaarVerificationStatus KycStatus @default(not_started) @map("aadhaar_verification_status")
+
+  aadhaarVerifiedName String? @map("aadhaar_verified_name")
+
+  aadhaarMaskedNumber String? @map("aadhaar_masked_number")
+
+  aadhaarVerifiedAt DateTime? @map("aadhaar_verified_at")
+
+  aadhaarFailureReason String? @map("aadhaar_failure_reason")
+
+  // Instagram itself is real (OAuth-connected, see InstagramConnection) —
+  // this tracks the separate admin judgment call of whether that account
+  // looks like a genuine clipper, not an outsider.
+  instagramReviewStatus KycStatus @default(not_started) @map("instagram_review_status")
+
+  instagramReviewedAt DateTime? @map("instagram_reviewed_at")
+
+  instagramReviewedByUserId String? @map("instagram_reviewed_by_user_id")
+
+  instagramRejectionReason String? @map("instagram_rejection_reason")
 
   // Null = Super Admin (full, unrestricted access) — the default for every
   // existing admin so assigning this feature never silently locks anyone
@@ -534,6 +602,10 @@ model Campaign {
 
   sourceAssets Json? @map("source_assets")
 
+  sourceVideoRequirement SourceAssetRequirement @default(mandatory) @map("source_video_requirement")
+
+  sourceAudioRequirement SourceAssetRequirement @default(not_required) @map("source_audio_requirement")
+
   referenceAssets Json? @map("reference_assets")
 
   coverImageUrl String? @map("cover_image_url")
@@ -555,6 +627,12 @@ model Campaign {
   allowExcessViewsToFillPool Boolean @default(false) @map("allow_excess_views_to_fill_pool")
 
   poolThresholdBps Int @default(8000) @map("pool_threshold_bps")
+
+  maxRepostsPerClip Int? @default(5) @map("max_reposts_per_clip")
+
+  complianceChecklist Json? @map("compliance_checklist")
+
+  autoReviewEnabled Boolean @default(true) @map("auto_review_enabled")
 
   startDate DateTime? @map("start_date")
 
@@ -859,6 +937,14 @@ model FormatDeliverable {
 
   draftDriveUrl String? @map("draft_drive_url")
 
+  /** A copy of the source video the brand/admin uploaded themselves — for
+   * when draftDriveUrl is a Google Drive link the auto-review pipeline can't
+   * fetch (Drive links need OAuth/service-account access and don't reliably
+   * return raw bytes for a plain HTTP fetch). When set, the auto-review
+   * pipeline reads this instead of draftDriveUrl; draftDriveUrl itself is
+   * untouched — it stays the creator's actual submission record. */
+  adminUploadedDraftUrl String? @map("admin_uploaded_draft_url")
+
   livePostUrl String? @map("live_post_url")
 
   status FormatDeliverableStatus @default(draft_pending)
@@ -889,6 +975,10 @@ model FormatDeliverable {
 
   paidAmountPaise Int? @map("paid_amount_paise")
 
+  listedInMarketplace Boolean @default(false) @map("listed_in_marketplace")
+
+  delistedAt DateTime? @map("delisted_at")
+
   updatedAt DateTime @updatedAt @map("updated_at")
 
   participation CampaignParticipation @relation(fields: [participationId], references: [id], onDelete: Cascade)
@@ -899,10 +989,70 @@ model FormatDeliverable {
 
   insightSnapshots DeliverableInsightSnapshot[]
 
+  marketplaceListingReposts MarketplaceRepost[] @relation("MarketplaceSource")
+
+  marketplaceRepostClaim MarketplaceRepost? @relation("MarketplacePoster")
+
+  autoReviewResults AutoReviewResult[]
+
   @@unique([participationId, platform])
   @@index([participationId])
   @@index([status])
+  @@index([listedInMarketplace, delistedAt])
   @@map("format_deliverables")
+}
+
+model MarketplaceRepost {
+  id String @id @default(cuid())
+
+  sourceDeliverableId String @map("source_deliverable_id")
+
+  posterDeliverableId String @unique @map("poster_deliverable_id")
+
+  posterCreatorId String @map("poster_creator_id")
+
+  originalCreatorSharePaise Int? @map("original_creator_share_paise")
+
+  posterSharePaise Int? @map("poster_share_paise")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sourceDeliverable FormatDeliverable @relation("MarketplaceSource", fields: [sourceDeliverableId], references: [id], onDelete: Cascade)
+
+  posterDeliverable FormatDeliverable @relation("MarketplacePoster", fields: [posterDeliverableId], references: [id], onDelete: Cascade)
+
+  @@index([sourceDeliverableId])
+  @@index([posterCreatorId, createdAt])
+  @@map("marketplace_reposts")
+}
+
+/**
+ * Shadow-mode audit log for the automated proof-review pipeline — never
+ * read by anything that gates payout or the deliverable's real status.
+ * Purely so an automated decision can later be compared against what a
+ * human actually decided, before anyone trusts it to skip review for real.
+ */
+model AutoReviewResult {
+  id String @id @default(cuid())
+
+  deliverableId String @map("deliverable_id")
+
+  stage AutoReviewStage @default(proof)
+
+  decision AutoReviewDecision
+
+  tier1Results Json @map("tier1_results")
+
+  tier2Results Json? @map("tier2_results")
+
+  modelVersion String? @map("model_version")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  deliverable FormatDeliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+
+  @@index([deliverableId, createdAt])
+  @@map("auto_review_results")
 }
 
 model DeliverableRejectionEvent {
@@ -983,6 +1133,8 @@ model PayoutMethod {
   ifscCode String? @map("ifsc_code")
 
   bankName String? @map("bank_name")
+
+  panNumber String? @map("pan_number")
 
   accountMasked String @map("account_masked")
 

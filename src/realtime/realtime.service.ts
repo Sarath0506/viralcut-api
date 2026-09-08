@@ -69,9 +69,44 @@ export class RealtimeService {
     this.broadcastDeliverableToBrand("deliverable:paid", payload);
   }
 
+  /** Notifies the creator (and brand/admin) after a background metrics
+   * refresh — view/like/comment/share counts changed but the deliverable's
+   * status didn't, so this is deliberately a separate event from
+   * deliverable:reviewed/live_proof rather than overloading either of
+   * those with an unrelated meaning. Lets the performance screen update
+   * live without a manual "Refresh views" tap. */
+  emitDeliverableMetricsUpdated(
+    payload: DeliverableEventPayload & {
+      viewCount: number;
+      reach: number;
+      likeCount: number;
+      commentCount: number;
+      shareCount: number;
+    },
+  ): void {
+    this.gateway.emitToCreator(payload.creatorId, "deliverable:metrics_updated", payload);
+    this.broadcastDeliverableToBrand("deliverable:metrics_updated", payload);
+  }
+
   /** Notifies the creator when an admin responds to (or resolves) their ticket. */
   emitSupportTicketUpdated(creatorId: string, ticketId: string): void {
     this.gateway.emitToCreator(creatorId, "supportTicket:updated", { ticketId });
+  }
+
+  /** Notifies the creator the moment an admin approves/rejects their
+   * Instagram review — the signup verification gate's waiting screen has
+   * nothing else telling it to re-check, so without this push it just
+   * sits on stale data until something else happens to refetch it. */
+  emitOnboardingVerificationUpdated(creatorId: string): void {
+    this.gateway.emitToCreator(creatorId, "onboarding:verification_updated", {});
+  }
+
+  /** Same problem, older/separate feature: the generic id_proof KYC status
+   * screen (profile/kyc) also has nothing telling it an admin just
+   * reviewed it, so it sits on "Under review" until something else
+   * refetches profileMeProvider. */
+  emitKycStatusUpdated(creatorId: string): void {
+    this.gateway.emitToCreator(creatorId, "kyc:status_updated", {});
   }
 
   emitParticipationJoined(payload: ParticipationJoinedPayload): void {

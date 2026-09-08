@@ -51,6 +51,55 @@ describe("CreatePayoutMethodDto", () => {
     expect(errors.some((e) => e.property === "ifscCode")).toBe(false);
   });
 
+  it("requires a valid PAN for bank accounts", async () => {
+    const dto = plainToInstance(CreatePayoutMethodDto, {
+      type: "bank",
+      label: "HDFC Bank",
+      accountHolderName: "Ravi Kumar",
+      account: "1234567890",
+      ifscCode: "HDFC0001234",
+    });
+    const errors = await validate(dto);
+    expect(errors.some((e) => e.property === "panNumber")).toBe(true);
+  });
+
+  it("accepts a well-formed PAN for bank accounts", async () => {
+    const dto = plainToInstance(CreatePayoutMethodDto, {
+      type: "bank",
+      label: "HDFC Bank",
+      accountHolderName: "Ravi Kumar",
+      account: "1234567890",
+      ifscCode: "HDFC0001234",
+      panNumber: "ABCPV1234D",
+    });
+    const errors = await validate(dto);
+    expect(errors.some((e) => e.property === "panNumber")).toBe(false);
+  });
+
+  it("rejects a malformed PAN", async () => {
+    const dto = plainToInstance(CreatePayoutMethodDto, {
+      type: "bank",
+      label: "HDFC Bank",
+      accountHolderName: "Ravi Kumar",
+      account: "1234567890",
+      ifscCode: "HDFC0001234",
+      panNumber: "not-a-pan",
+    });
+    const errors = await validate(dto);
+    expect(errors.some((e) => e.property === "panNumber")).toBe(true);
+  });
+
+  it("does not require a PAN for UPI methods", async () => {
+    const dto = plainToInstance(CreatePayoutMethodDto, {
+      type: "upi",
+      label: "Personal UPI",
+      accountHolderName: "Ravi Kumar",
+      account: "ravi@upi",
+    });
+    const errors = await validate(dto);
+    expect(errors.some((e) => e.property === "panNumber")).toBe(false);
+  });
+
   it("requires an account holder name", async () => {
     const dto = plainToInstance(CreatePayoutMethodDto, {
       type: "upi",

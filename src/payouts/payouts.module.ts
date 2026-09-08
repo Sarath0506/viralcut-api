@@ -8,5 +8,6 @@ import { PayoutsService } from "./payouts.service";
   imports: [NotificationsModule],
   controllers: [PayoutsController],
   providers: [PayoutsService],
+  exports: [PayoutsService],
 })
 export class PayoutsModule {}

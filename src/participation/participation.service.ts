@@ -2,8 +2,10 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
+import { Cron, CronExpression } from "@nestjs/schedule";
 import {
   CampaignStatus,
   FormatDeliverableStatus,
@@ -13,16 +15,19 @@ import {
 } from "@prisma/client";
 
 import { ActivityLogService } from "../activity/activity-log.service";
+import { AutoReviewService } from "../auto-review/auto-review.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
-import { ApifyService } from "../common/apify.service";
+import { ApifyService, type PlatformViewResult } from "../common/apify.service";
 import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
 import { CreatorProfilesService } from "../creator-profiles/creator-profiles.service";
+import { InstagramOAuthService } from "../creator-profiles/instagram-oauth.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
-import { DRAFT_URL_MESSAGE, isValidDraftUrl } from "./drive-url";
+import { FILLABLE_DELIVERABLE_STATUSES } from "./deliverable-status";
+import { DRAFT_URL_MESSAGE, isUploadedFileUrl, isValidDraftUrl } from "./drive-url";
 import { ReviewDeliverableAction } from "./dto/review-deliverable.dto";
 import type { SubmitDraftDto } from "./dto/submit-draft.dto";
 import type { SubmitLiveProofDto } from "./dto/submit-live-proof.dto";
@@ -85,6 +90,8 @@ type ParticipationWithRelations = Prisma.CampaignParticipationGetPayload<{
 
 @Injectable()
 export class ParticipationService {
+  private readonly logger = new Logger(ParticipationService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly campaignAccess: CampaignAccessService,
@@ -93,6 +100,8 @@ export class ParticipationService {
     private readonly activityLog: ActivityLogService,
     private readonly notifications: InAppNotificationService,
     private readonly creatorProfiles: CreatorProfilesService,
+    private readonly autoReview: AutoReviewService,
+    private readonly instagramOAuth: InstagramOAuthService,
   ) {}
 
   private deliverableEventPayload(
@@ -242,6 +251,21 @@ export class ParticipationService {
     creatorProfileId: string,
   ) {
     await this.creatorProfiles.assertOwnership(creatorId, creatorProfileId);
+
+    // A creator who earns from this campaign but never added bank details
+    // (or added them before PAN became mandatory there) has no way to get
+    // paid out, and no PAN on file for TDS/tax reporting — better to block
+    // the join up front than let them submit work and only discover this
+    // at withdrawal time.
+    const bankMethod = await this.prisma.payoutMethod.findFirst({
+      where: { userId: creatorId, type: "bank" },
+    });
+    if (!bankMethod || !bankMethod.panNumber) {
+      throw new BadRequestException({
+        code: "BANK_DETAILS_REQUIRED",
+        message: "Add your bank details (including PAN) before joining a campaign.",
+      });
+    }
 
     const campaign = await this.prisma.campaign.findFirst({
       where: { id: campaignId },
@@ -396,11 +420,7 @@ export class ParticipationService {
       deliverable.participation.campaign.status,
     );
 
-    const resubmittable: FormatDeliverableStatus[] = [
-      FormatDeliverableStatus.draft_pending,
-      FormatDeliverableStatus.draft_rejected,
-    ];
-    if (!resubmittable.includes(deliverable.status)) {
+    if (!FILLABLE_DELIVERABLE_STATUSES.includes(deliverable.status)) {
       throw new BadRequestException({
         code: "VALIDATION_ERROR",
         message: "This format cannot accept a new draft right now",
@@ -415,6 +435,15 @@ export class ParticipationService {
     }
 
     const trimmedUrl = dto.draftDriveUrl.trim();
+
+    if (dto.listedInMarketplace && !isUploadedFileUrl(trimmedUrl)) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message:
+          "Listing in the marketplace needs your draft uploaded through the app, not a Google Drive link.",
+      });
+    }
+
     const lastRejected = deliverable.rejectionEvents[0];
     if (
       deliverable.status === FormatDeliverableStatus.draft_rejected &&
@@ -435,12 +464,18 @@ export class ParticipationService {
         status: FormatDeliverableStatus.under_review,
         rejectionReason: null,
         draftSubmittedAt: new Date(),
+        listedInMarketplace: dto.listedInMarketplace ?? false,
       },
     });
 
     this.realtime.emitDeliverableSubmitted(
       this.deliverableEventPayload(updated, deliverable.participation),
     );
+
+    // Shadow-mode automated review — fire-and-forget, never awaited. Never
+    // changes this response, the deliverable's status, or the human review
+    // flow below; it only ever produces a logged AutoReviewResult row.
+    void this.autoReview.runDraftPipeline(updated.id);
 
     return {
       id: updated.id,
@@ -474,7 +509,11 @@ export class ParticipationService {
       deliverable.participation.campaign.status,
     );
 
-    if (deliverable.status !== FormatDeliverableStatus.draft_approved) {
+    const proofFillableStatuses: FormatDeliverableStatus[] = [
+      FormatDeliverableStatus.draft_approved,
+      FormatDeliverableStatus.proof_rejected,
+    ];
+    if (!proofFillableStatuses.includes(deliverable.status)) {
       throw new BadRequestException({
         code: "VALIDATION_ERROR",
         message: "Live proof can only be submitted after draft approval",
@@ -487,12 +526,18 @@ export class ParticipationService {
         livePostUrl: dto.livePostUrl.trim(),
         status: FormatDeliverableStatus.proof_under_review,
         liveSubmittedAt: new Date(),
+        rejectionReason: null,
       },
     });
 
     this.realtime.emitDeliverableLiveProof(
       this.deliverableEventPayload(updated, deliverable.participation),
     );
+
+    // Shadow-mode automated review — fire-and-forget, never awaited. Never
+    // changes this response, the deliverable's status, or the human review
+    // flow below; it only ever produces a logged AutoReviewResult row.
+    void this.autoReview.runProofPipeline(updated.id);
 
     return {
       id: updated.id,
@@ -776,6 +821,7 @@ export class ParticipationService {
       platform: deliverable.platform,
       status: deliverable.status,
       draftDriveUrl: deliverable.draftDriveUrl,
+      adminUploadedDraftUrl: deliverable.adminUploadedDraftUrl,
       livePostUrl: deliverable.livePostUrl,
       rejectionReason: deliverable.rejectionReason,
       draftSubmittedAt: deliverable.draftSubmittedAt?.toISOString() ?? null,
@@ -793,6 +839,15 @@ export class ParticipationService {
         ratePer1kDisplay: `₹${deliverable.participation.campaign.ratePer1kPaise / 100} / 1K views`,
         budgetPaise: deliverable.participation.campaign.budgetPaise,
       },
+      viewCount: deliverable.viewCount,
+      likeCount: deliverable.likeCount,
+      commentCount: deliverable.commentCount,
+      shareCount: deliverable.shareCount,
+      estimatedPaise: computeEstimatedPaise(
+        deliverable.viewCount,
+        deliverable.participation.campaign.ratePer1kPaise,
+        deliverable.participation.campaign.maxPayoutPaise,
+      ),
       creator: deliverable.participation.creator,
       creatorProfile: {
         id: deliverable.participation.creatorProfile.id,
@@ -942,6 +997,52 @@ export class ParticipationService {
     return { id: updated.id, status: updated.status };
   }
 
+  /** Lets a brand/admin/staff reviewer attach their own copy of a Drive-linked
+   * draft — the auto-review pipeline can't fetch Drive links itself (needs
+   * OAuth/service-account access, and larger files return an HTML
+   * virus-scan interstitial instead of raw bytes for a plain fetch). This
+   * doesn't touch draftDriveUrl, which stays the creator's actual submission
+   * record — it only gives the pipeline something fetchable to check
+   * against. Re-triggers the pipeline immediately if the deliverable is
+   * still awaiting review, fire-and-forget, same as a real submission. */
+  async setAdminDraftCopy(
+    userId: string,
+    role: UserRole,
+    deliverableId: string,
+    url: string,
+  ): Promise<{ id: string; adminUploadedDraftUrl: string }> {
+    const deliverable = await this.prisma.formatDeliverable.findUnique({
+      where: { id: deliverableId },
+      include: { participation: { include: { campaign: true } } },
+    });
+    if (!deliverable) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Deliverable not found" });
+    }
+
+    await this.campaignAccess.assertCanAccessCampaign(
+      userId,
+      role,
+      deliverable.participation.campaign,
+      { requireWrite: true },
+    );
+
+    const updated = await this.prisma.formatDeliverable.update({
+      where: { id: deliverableId },
+      data: { adminUploadedDraftUrl: url },
+    });
+
+    if (updated.status === FormatDeliverableStatus.under_review) {
+      void this.autoReview.runDraftPipeline(updated.id);
+    } else if (
+      updated.status === FormatDeliverableStatus.proof_under_review ||
+      updated.status === FormatDeliverableStatus.live_submitted
+    ) {
+      void this.autoReview.runProofPipeline(updated.id);
+    }
+
+    return { id: updated.id, adminUploadedDraftUrl: url };
+  }
+
   async countUnderReviewForCreator(creatorId: string, creatorProfileId?: string): Promise<number> {
     return this.prisma.formatDeliverable.count({
       where: {
@@ -965,7 +1066,7 @@ export class ParticipationService {
     }
 
     const participations = await this.prisma.campaignParticipation.findMany({
-      where: { campaignId },
+      where: { campaignId, creator: { isActive: true } },
       include: {
         creator: {
           select: { id: true, displayName: true, username: true, avatarUrl: true },
@@ -1019,7 +1120,12 @@ export class ParticipationService {
   }
 
   async getOverallLeaderboard(currentUserId: string, limit = 20) {
+    // Excludes soft-deleted creators (isActive: false) — their displayName
+    // is scrubbed to "deleted_<id>" on deletion (see UsersService.deleteMe),
+    // and without this filter that placeholder name shows up ranked
+    // alongside real, active creators.
     const participations = await this.prisma.campaignParticipation.findMany({
+      where: { creator: { isActive: true } },
       include: {
         creator: {
           select: { id: true, displayName: true, username: true, avatarUrl: true },
@@ -1205,7 +1311,106 @@ export class ParticipationService {
       });
     }
 
-    const metrics = await this.apify.getViewCount(deliverable.livePostUrl);
+    return this._refreshDeliverableMetrics(deliverable);
+  }
+
+  /** Same manual refresh as refreshDeliverableViews, but for a brand/admin/
+   * staff reviewer looking at their own campaign's submissions instead of a
+   * creator looking at their own deliverable — a safety-net button next to
+   * the automatic 5-minute sweep, for a reviewer who wants current numbers
+   * right now rather than waiting for the next sweep pass. */
+  async refreshDeliverableViewsForBrand(
+    userId: string,
+    role: UserRole,
+    deliverableId: string,
+  ) {
+    const deliverable = await this.prisma.formatDeliverable.findUnique({
+      where: { id: deliverableId },
+      include: { participation: { include: { campaign: true } } },
+    });
+
+    if (!deliverable) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Deliverable not found" });
+    }
+
+    await this.campaignAccess.assertCanAccessCampaign(
+      userId,
+      role,
+      deliverable.participation.campaign,
+    );
+
+    const proofStatuses: FormatDeliverableStatus[] = [
+      FormatDeliverableStatus.proof_under_review,
+      FormatDeliverableStatus.proof_approved,
+      FormatDeliverableStatus.live_submitted,
+    ];
+    if (!proofStatuses.includes(deliverable.status) || !deliverable.livePostUrl) {
+      throw new BadRequestException({
+        code: "VALIDATION_ERROR",
+        message: "Views can only be refreshed after live proof is submitted",
+      });
+    }
+
+    return this._refreshDeliverableMetrics(deliverable);
+  }
+
+  /** The shared metrics-fetch-and-persist logic behind both the
+   * creator-invoked "Refresh views" call and the background sweep
+   * (refreshActiveDeliverableMetrics) — same source-of-truth so a manual
+   * tap and an automatic background pass never disagree on how a number
+   * was produced.
+   *
+   * Deliberately does NOT touch the campaign pool / emitCampaignUpdated
+   * here — that broadcast goes to *every connected creator app-wide*
+   * (see broadcastCampaignEvent), which is fine for one human-initiated
+   * manual refresh but would mean the background sweep spams a
+   * campaign-wide, app-wide broadcast once per deliverable it silently
+   * refreshes — confirmed live: a single 5-minute sweep pass over 29 real
+   * deliverables caused 29 such broadcasts, which is what was showing up
+   * as the Performance screen (and potentially any other open screen)
+   * reloading multiple times in a row. Callers that need the pool-check
+   * do it themselves, at whatever granularity is actually appropriate for
+   * them (refreshDeliverableViews: every call; the sweep: once per
+   * campaign touched, not once per deliverable — see
+   * refreshActiveDeliverableMetrics).
+   *
+   * Still emits deliverable:metrics_updated, but that one is scoped to
+   * just the affected creator (and their brand/campaign room) — not
+   * broadcast to every connected creator — so it's safe to fire once per
+   * deliverable without causing the same storm. */
+  private async _persistDeliverableMetrics(
+    deliverable: Prisma.FormatDeliverableGetPayload<{
+      include: { participation: { include: { campaign: true } } };
+    }>,
+  ) {
+    const deliverableId = deliverable.id;
+    const livePostUrl = deliverable.livePostUrl!;
+
+    // Instagram exclusively uses real, first-party Insights — no Apify
+    // fallback. This only returns real numbers when the creator connected
+    // the exact Instagram account that posted the proof (see
+    // getMediaInsightsForPost); otherwise it's "unavailable", not a
+    // silently-substituted scrape. YouTube/Twitter have no Insights
+    // equivalent in this codebase and stay on Apify exclusively.
+    let metrics: PlatformViewResult;
+    let metricsSource: "instagram_insights" | "apify" | "unavailable";
+    if (deliverable.platform.startsWith("instagram")) {
+      const insights = await this.instagramOAuth.getMediaInsightsForPost(
+        deliverable.participation.creatorProfileId,
+        livePostUrl,
+      );
+      if (insights) {
+        metrics = insights;
+        metricsSource = "instagram_insights";
+      } else {
+        metrics = { viewCount: 0, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram" };
+        metricsSource = "unavailable";
+      }
+    } else {
+      metrics = await this.apify.getViewCount(livePostUrl);
+      metricsSource = "apify";
+    }
+    this.logger.log(`refreshDeliverableViews: ${deliverableId} metrics source = ${metricsSource}`);
 
     const updated = await this.prisma.formatDeliverable.update({
       where: { id: deliverableId },
@@ -1218,21 +1423,70 @@ export class ParticipationService {
       },
     });
 
-    // Re-evaluate the pool: close intake at the 80% threshold, auto-pause at
-    // 100%. Emit exactly one campaign:updated either way so brand portal
-    // pool bars and intake-status badges refresh live after every view sync.
-    const poolState = await this._evaluateCampaignPoolThresholds(deliverable.participation.campaign);
-    this.realtime.emitCampaignUpdated({
-      id: deliverable.participation.campaign.id,
+    this.realtime.emitDeliverableMetricsUpdated({
+      deliverableId,
+      participationId: deliverable.participation.id,
+      campaignId: deliverable.participation.campaignId,
+      creatorId: deliverable.participation.creatorId,
       brandProfileId: deliverable.participation.campaign.brandProfileId,
+      platform: deliverable.platform,
+      status: deliverable.status,
+      viewCount:    updated.viewCount,
+      reach:        updated.reach,
+      likeCount:    updated.likeCount,
+      commentCount: updated.commentCount,
+      shareCount:   updated.shareCount,
+    });
+
+    return { updated, metricsSource };
+  }
+
+  /** Runs the pool-threshold check for one campaign and emits
+   * campaign:updated — the app-wide-to-every-creator broadcast — exactly
+   * once. Shared by the manual refresh (always emits, matching prior
+   * behavior so brand portal pool bars move on every sync) and the sweep
+   * (only emits when the intake status actually changed — see
+   * refreshActiveDeliverableMetrics — since nothing there is a human
+   * waiting to see a bar move in real time). */
+  private async _syncCampaignPool(
+    campaign: {
+      id: string;
+      status: CampaignStatus;
+      budgetPaise: number;
+      brandProfileId: string | null;
+      newClipperIntakeStatus: NewClipperIntakeStatus;
+      poolThresholdBps: number;
+    },
+    { onlyIfChanged }: { onlyIfChanged: boolean },
+  ): Promise<void> {
+    const poolState = await this._evaluateCampaignPoolThresholds(campaign);
+    const changed =
+      poolState.paused || poolState.newClipperIntakeStatus !== campaign.newClipperIntakeStatus;
+    if (onlyIfChanged && !changed) return;
+    this.realtime.emitCampaignUpdated({
+      id: campaign.id,
+      brandProfileId: campaign.brandProfileId,
       ...(poolState.paused ? { status: CampaignStatus.paused } : {}),
       newClipperIntakeStatus: poolState.newClipperIntakeStatus,
       poolUtilizationBps: poolState.utilizationBps,
     });
+  }
 
-    // Analytics above are always the real, uncapped numbers from Apify.
-    // payoutCapped tells the client this deliverable's *earnings* have hit
-    // its maxPayoutPaise ceiling even though views keep climbing — so the UI
+  private async _refreshDeliverableMetrics(
+    deliverable: Prisma.FormatDeliverableGetPayload<{
+      include: { participation: { include: { campaign: true } } };
+    }>,
+  ) {
+    const { updated, metricsSource } = await this._persistDeliverableMetrics(deliverable);
+
+    // Re-evaluate the pool: close intake at the 80% threshold, auto-pause at
+    // 100%. Emit exactly one campaign:updated either way so brand portal
+    // pool bars and intake-status badges refresh live after every view sync.
+    await this._syncCampaignPool(deliverable.participation.campaign, { onlyIfChanged: false });
+
+    // Analytics above are always the real, uncapped numbers. payoutCapped
+    // tells the client this deliverable's *earnings* have hit its
+    // maxPayoutPaise ceiling even though views keep climbing — so the UI
     // can show "earnings capped, views still growing" instead of implying a
     // rising ₹ figure that isn't actually rising anymore.
     const campaign = deliverable.participation.campaign;
@@ -1251,7 +1505,81 @@ export class ParticipationService {
       commentCount: updated.commentCount,
       shareCount:   updated.shareCount,
       payoutCapped,
+      metricsSource,
     };
+  }
+
+  /** Background sweep — periodically refreshes every deliverable that's
+   * actually live and trackable (a submitted proof URL, not yet in a
+   * terminal rejected state), so view/like/comment/share counts and
+   * payout estimates update on their own instead of only when a creator
+   * happens to open the app and tap "Refresh views". Every-5-minutes
+   * cadence balances "feels live" against not hammering Instagram
+   * Insights/Apify — there's no job queue in this codebase, so this runs
+   * sequentially with a short pause between each deliverable rather than
+   * in parallel, and one failure never stops the rest of the sweep. */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async refreshActiveDeliverableMetrics(): Promise<void> {
+    // The whole body is wrapped — a transient DB blip (a dropped Postgres
+    // connection, a pool timeout) hitting the very first query would
+    // otherwise throw out of this @Cron method silently: no log line, the
+    // sweep just doesn't run for that cycle with nothing to show for it.
+    // Confirmed live: five consecutive 5-minute cycles produced no
+    // "sweeping N deliverable(s)" log at all during a real connection
+    // drop, and the only trace of it was an unrelated request's error log
+    // at the same time — this makes that kind of gap visible instead of
+    // silent, even though it can't fix the underlying transient outage.
+    try {
+      const trackableStatuses: FormatDeliverableStatus[] = [
+        FormatDeliverableStatus.live_submitted,
+        FormatDeliverableStatus.proof_under_review,
+        FormatDeliverableStatus.proof_approved,
+      ];
+      const deliverables = await this.prisma.formatDeliverable.findMany({
+        where: { status: { in: trackableStatuses }, livePostUrl: { not: null } },
+        include: { participation: { include: { campaign: true } } },
+      });
+      if (deliverables.length === 0) return;
+
+      this.logger.log(`refreshActiveDeliverableMetrics: sweeping ${deliverables.length} deliverable(s)`);
+      let succeeded = 0;
+      let failed = 0;
+      // One campaign per unique id — the pool-threshold check below runs at
+      // most once per campaign touched, not once per deliverable (a busy
+      // campaign might have a dozen active deliverables in this same sweep).
+      const touchedCampaigns = new Map<string, (typeof deliverables)[number]["participation"]["campaign"]>();
+      for (const deliverable of deliverables) {
+        try {
+          await this._persistDeliverableMetrics(deliverable);
+          touchedCampaigns.set(deliverable.participation.campaign.id, deliverable.participation.campaign);
+          succeeded++;
+        } catch (err) {
+          failed++;
+          this.logger.warn(`refreshActiveDeliverableMetrics: failed for ${deliverable.id}: ${err}`);
+        }
+        // A small pause between calls — this is a periodic background sweep,
+        // not a user waiting on a response, so there's no reason to burst
+        // every request at once against Instagram/Apify's rate limits.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      // Pool check happens after the loop, once per campaign, and only
+      // broadcasts (to every connected creator app-wide) when the intake
+      // status actually changed — nobody's watching a bar move live during
+      // an unattended background sweep, so there's no reason to emit the
+      // same wide broadcast unconditionally the way the manual refresh does.
+      for (const campaign of touchedCampaigns.values()) {
+        try {
+          await this._syncCampaignPool(campaign, { onlyIfChanged: true });
+        } catch (err) {
+          this.logger.warn(`refreshActiveDeliverableMetrics: pool check failed for campaign ${campaign.id}: ${err}`);
+        }
+      }
+
+      this.logger.log(`refreshActiveDeliverableMetrics: done — ${succeeded} succeeded, ${failed} failed`);
+    } catch (err) {
+      this.logger.warn(`refreshActiveDeliverableMetrics: sweep aborted — ${err}`);
+    }
   }
 
   /** Re-checks a live campaign's pool usage against its 80% intake threshold

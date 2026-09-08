@@ -92,6 +92,7 @@ export class PayoutsService {
       accountMasked: m.accountMasked,
       ifscCode: m.ifscCode,
       bankName: m.bankName,
+      panNumber: m.panNumber,
       isDefault: m.isDefault,
     }));
   }
@@ -109,6 +110,7 @@ export class PayoutsService {
         accountNumber: this.encryptAccount(dto.account),
         ifscCode: dto.type === "bank" ? dto.ifscCode : null,
         bankName: dto.bankName ?? null,
+        panNumber: dto.type === "bank" ? dto.panNumber : null,
         accountMasked: this.maskAccount(dto.account),
         isDefault,
       },
@@ -122,6 +124,7 @@ export class PayoutsService {
       accountMasked: method.accountMasked,
       ifscCode: method.ifscCode,
       bankName: method.bankName,
+      panNumber: method.panNumber,
       isDefault: method.isDefault,
     };
   }
@@ -149,6 +152,36 @@ export class PayoutsService {
     return { accountNumber };
   }
 
+  /**
+   * Same decryption, for an admin viewing any creator's payout method —
+   * needed now that payouts are being sent manually and an admin genuinely
+   * needs the real account number to wire money. Not ownership-scoped like
+   * revealAccountNumber (an admin can look up any creator's method by id),
+   * but still audit-logged, including which creator's data was viewed, so
+   * there's a real trail of who accessed sensitive bank details and when.
+   */
+  async revealAccountNumberForAdmin(
+    methodId: string,
+    adminUserId: string,
+  ): Promise<{ accountNumber: string }> {
+    const method = await this.prisma.payoutMethod.findUnique({
+      where: { id: methodId },
+    });
+    if (!method) {
+      throw new NotFoundException({ code: "NOT_FOUND", message: "Payout method not found" });
+    }
+
+    const accountNumber = this.decryptAccount(method.accountNumber);
+
+    await this.activityLog.log(adminUserId, "admin.payout_method.account_revealed", {
+      targetType: "payout_method",
+      targetId: methodId,
+      metadata: { creatorId: method.userId },
+    });
+
+    return { accountNumber };
+  }
+
   async updatePayoutMethod(userId: string, methodId: string, dto: UpdatePayoutMethodDto) {
     const method = await this.prisma.payoutMethod.findFirst({
       where: { id: methodId, userId },
@@ -162,6 +195,7 @@ export class PayoutsService {
         ...(dto.accountHolderName !== undefined && { accountHolderName: dto.accountHolderName }),
         ...(dto.ifscCode !== undefined && { ifscCode: dto.ifscCode }),
         ...(dto.bankName !== undefined && { bankName: dto.bankName }),
+        ...(dto.panNumber !== undefined && { panNumber: dto.panNumber }),
         ...(dto.label !== undefined && { label: dto.label }),
       },
     });
@@ -173,6 +207,7 @@ export class PayoutsService {
       accountMasked: updated.accountMasked,
       ifscCode: updated.ifscCode,
       bankName: updated.bankName,
+      panNumber: updated.panNumber,
       isDefault: updated.isDefault,
     };
   }
