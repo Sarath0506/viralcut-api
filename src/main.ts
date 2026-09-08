@@ -7,6 +7,7 @@ import helmet from "helmet";
 import { Logger } from "nestjs-pino";
 
 import { AppModule } from "./app.module";
+// force restart: pick up updated INSTAGRAM_OAUTH_SCOPES from .env
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {

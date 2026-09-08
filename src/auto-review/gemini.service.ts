@@ -6,6 +6,12 @@ import type { Env } from "../config/env";
 import type { ChecklistItem, CriterionResult } from "./auto-review.types";
 
 const MODEL = "gemini-2.5-flash";
+// A call that never resolves would otherwise hang the whole fire-and-forget
+// pipeline indefinitely — confirmed live with a large inline video payload
+// that never completed. This doesn't cancel the in-flight request, just
+// stops waiting on it, so the pipeline can still log needs_review instead
+// of hanging forever.
+const GENERATE_CONTENT_TIMEOUT_MS = 60_000;
 
 /** Thin wrapper around @google/genai for the auto-review pipeline's Tier 2
  * checks — video/caption compliance against a checklist, checklist
@@ -26,6 +32,25 @@ export class GeminiService {
     return this.client !== null;
   }
 
+  private withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`${label} timed out after ${GENERATE_CONTENT_TIMEOUT_MS}ms`)),
+        GENERATE_CONTENT_TIMEOUT_MS,
+      );
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+  }
+
   /** Turns a campaign's free-text brief/do's/avoid's into a stable set of
    * individually-checkable criteria, once — callers cache the result on
    * Campaign.complianceChecklist so every deliverable in a campaign is
@@ -41,7 +66,7 @@ export class GeminiService {
       if (input.doRules) parts.push(`DO:\n${input.doRules}`);
       if (input.avoidRules) parts.push(`AVOID:\n${input.avoidRules}`);
 
-      const res = await this.client.models.generateContent({
+      const res = await this.withTimeout(this.client.models.generateContent({
         model: MODEL,
         contents:
           "You turn a brand campaign brief into a short list of individually-checkable " +
@@ -63,7 +88,7 @@ export class GeminiService {
             },
           },
         },
-      });
+      }), "deriveChecklist");
 
       const raw = JSON.parse(res.text ?? "[]") as Array<{ label: string; source: string }>;
       return raw.map((item, i) => ({
@@ -83,43 +108,99 @@ export class GeminiService {
    * pass/fail, confidence, and a short reason. Native audio understanding
    * means no separate transcription step: Gemini reasons over whatever
    * speech is actually present, and correctly reports when there isn't any
-   * (verified directly against a real silent/music-only test clip). */
+   * (verified directly against a real silent/music-only test clip).
+   *
+   * The checklist is fully assembled by the caller (AutoReviewService) —
+   * this method doesn't decide what's required. When it already contains a
+   * source_video_match and/or source_audio_match item (added only when the
+   * campaign's corresponding requirement isn't "not_required"), sourceMedia
+   * is sent as an extra attachment and the prompt explains how to judge
+   * whichever of those two items is actually present: video-match on
+   * visuals only, audio-match on the audio track only — a song-push
+   * campaign can require the audio without caring what footage is used.
+   * sourceMedia can be bytes already fetched (an uploaded/Drive Source
+   * Asset) or a YouTube URL — Gemini fetches and processes a YouTube video
+   * directly server-side when given as fileData.fileUri, verified live
+   * against a real public video, so a YouTube-link source asset doesn't
+   * need to be downloaded by us at all. Each returned result is enriched
+   * with `required`, copied from the matching checklist item, so the
+   * caller's decision logic knows which fails actually gate the outcome. */
   async evaluateCompliance(input: {
     videoBuffer: Buffer;
     mimeType: string;
     caption: string | null;
     checklist: ChecklistItem[];
+    sourceMedia?: { buffer: Buffer; mimeType: string } | { youtubeUrl: string } | null;
   }): Promise<CriterionResult[] | null> {
     if (!this.client) return null;
-    if (input.checklist.length === 0) return [];
+    const checklist = input.checklist;
+    if (checklist.length === 0) return [];
+    const hasVideoMatchItem = checklist.some((c) => c.id === "source_video_match");
+    const hasAudioMatchItem = checklist.some((c) => c.id === "source_audio_match");
     try {
       const isImage = input.mimeType.startsWith("image/");
-      const res = await this.client.models.generateContent({
-        model: MODEL,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType: input.mimeType, data: input.videoBuffer.toString("base64") } },
-              {
-                text:
-                  `Evaluate this ${isImage ? "image" : "video"} against each checklist item ` +
-                  "below. Consider the visuals" +
-                  (isImage
-                    ? ""
-                    : ", any audible speech (transcribe internally as needed — do not " +
-                      "assume speech exists, some clips are music-only)") +
-                  ", and the caption. " +
-                  "Content may be in English, Hindi, Telugu, Hinglish, or Tenglish — " +
-                  "apply the same scrutiny regardless of language or script. For each " +
-                  "item return pass/fail, a confidence from 0 to 1, and a short concrete " +
-                  "reason citing what you actually saw/heard.\n\n" +
-                  `CAPTION: ${input.caption ?? "(none)"}\n\n` +
-                  `CHECKLIST:\n${input.checklist.map((c) => `- [${c.id}] ${c.label}`).join("\n")}`,
-              },
-            ],
+      const parts: Array<
+        | { inlineData: { mimeType: string; data: string } }
+        | { fileData: { fileUri: string } }
+        | { text: string }
+      > = [];
+      if (input.sourceMedia && "youtubeUrl" in input.sourceMedia) {
+        parts.push({ fileData: { fileUri: input.sourceMedia.youtubeUrl } });
+      } else if (input.sourceMedia) {
+        parts.push({
+          inlineData: {
+            mimeType: input.sourceMedia.mimeType,
+            data: input.sourceMedia.buffer.toString("base64"),
           },
-        ],
+        });
+      }
+      parts.push({ inlineData: { mimeType: input.mimeType, data: input.videoBuffer.toString("base64") } });
+
+      const matchJudgments: string[] = [];
+      if (hasVideoMatchItem) {
+        matchJudgments.push(
+          "For the source_video_match item, judge whether the clip is PREDOMINANTLY derived from " +
+            "the source attachment's footage. Color grading, filters, transitions, reordering the " +
+            "source segments, text overlays, and a reasonable amount of B-roll/cutaways are normal " +
+            "editing and should NOT cause a fail by themselves — a clip can pass this item even with " +
+            "some added footage mixed in, as long as most of it is clearly the source content, edited. " +
+            "Fail this item only when a substantial portion of the clip is visually unrelated content " +
+            "that doesn't derive from the source at all (a genuinely different subject/scene, not just " +
+            "a different edit of the same one).",
+        );
+      }
+      if (hasAudioMatchItem) {
+        matchJudgments.push(
+          "For the source_audio_match item, judge whether the submitted clip's AUDIO TRACK (the " +
+            "music/song playing, not any spoken voiceover) matches the audio in the source attachment — " +
+            "the visuals don't matter for this item, only whether it's the same audio/song.",
+        );
+      }
+
+      parts.push({
+        text:
+          (input.sourceMedia
+            ? "The FIRST attachment is the brand's original source material. The " +
+              `SECOND attachment is the submitted ${isImage ? "image" : "clip"}. ` +
+              `${matchJudgments.join(" ")} For every other item, judge the submitted clip itself.\n\n`
+            : `Evaluate this ${isImage ? "image" : "video"} against each checklist item below.\n\n`) +
+          "Consider the visuals" +
+          (isImage
+            ? ""
+            : ", any audible speech (transcribe internally as needed — do not " +
+              "assume speech exists, some clips are music-only)") +
+          ", and the caption. " +
+          "Content may be in English, Hindi, Telugu, Hinglish, or Tenglish — " +
+          "apply the same scrutiny regardless of language or script. For each " +
+          "item return pass/fail, a confidence from 0 to 1, and a short concrete " +
+          "reason citing what you actually saw/heard.\n\n" +
+          `CAPTION: ${input.caption ?? "(none)"}\n\n` +
+          `CHECKLIST:\n${checklist.map((c) => `- [${c.id}] ${c.label}`).join("\n")}`,
+      });
+
+      const res = await this.withTimeout(this.client.models.generateContent({
+        model: MODEL,
+        contents: [{ role: "user", parts }],
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -137,9 +218,19 @@ export class GeminiService {
             },
           },
         },
-      });
+      }), "evaluateCompliance");
 
-      return JSON.parse(res.text ?? "[]") as CriterionResult[];
+      const raw = JSON.parse(res.text ?? "[]") as Array<{
+        criterionId: string;
+        label: string;
+        pass: boolean;
+        confidence: number;
+        reason: string;
+      }>;
+      return raw.map((r) => ({
+        ...r,
+        required: checklist.find((c) => c.id === r.criterionId)?.required ?? true,
+      }));
     } catch (err) {
       this.logger.warn(`evaluateCompliance failed: ${err}`);
       return null;
@@ -166,7 +257,7 @@ export class GeminiService {
         input.liveMediaKind === "video"
           ? "a video fetched from a live post"
           : "a preview image scraped from a live post (not the full video — a static frame/thumbnail only)";
-      const res = await this.client.models.generateContent({
+      const res = await this.withTimeout(this.client.models.generateContent({
         model: MODEL,
         contents: [
           {
@@ -197,7 +288,7 @@ export class GeminiService {
             required: ["same", "confidence", "reason"],
           },
         },
-      });
+      }), "compareDraftToLive");
 
       return JSON.parse(res.text ?? "{}") as { same: boolean; confidence: number; reason: string };
     } catch (err) {

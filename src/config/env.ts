@@ -121,6 +121,26 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true" || v === "1"),
+  /** When true, an `auto_approved`/`auto_rejected` decision actually applies
+   * — approving/rejecting the real deliverable, same as a human would,
+   * instead of only being logged. `needs_review` decisions are never
+   * enforced; a human always reviews those. Requires AUTO_REVIEW_ENABLED.
+   * Default off — shadow-mode logging only. */
+  AUTO_REVIEW_ENFORCE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  /** Cashfree Secure ID (Verification Suite) credentials — a separate
+   * product from Cashfree Payments; having one doesn't mean the other is
+   * active on the same account. Used for real PAN + Aadhaar verification
+   * during clipper signup. With no key configured, CashfreeVerificationService
+   * degrades to not-configured (same pattern as GeminiService/ApifyService),
+   * so nothing here is called until real credentials exist. */
+  CASHFREE_CLIENT_ID: z.string().optional(),
+  CASHFREE_CLIENT_SECRET: z.string().optional(),
+  /** "sandbox" (default) or "production" — selects which Cashfree base URL
+   * to call. Sandbox responses are mocked by Cashfree, not real lookups. */
+  CASHFREE_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
   /** Firebase Admin SDK service account JSON, base64-encoded (one line —
    * Firebase Console > Project Settings > Service Accounts > Generate new
    * private key, then `base64 -i key.json`). Unset = push notifications

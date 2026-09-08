@@ -84,10 +84,18 @@ export async function checkFormatGate(
         reason: `Vertical video (${stream.width}x${stream.height}) matches ${platform}`,
       };
     }
+    // Passes, not just "unresolved": confirmed against Instagram's own
+    // current documentation that it never rejects a non-vertical upload
+    // for Reels — it accepts any aspect ratio and crops/letterboxes it to
+    // fit, with 9:16 only ever a *recommendation* to avoid that, not an
+    // upload requirement. This gate mirrors what the platform will
+    // actually accept, not an internal quality bar — a brand that wants
+    // to catch a letterboxed-looking Reel before it goes live still can,
+    // by reviewing the draft itself; this gate just won't block it.
     return {
       gate: "format_match",
-      status: "fail",
-      reason: `Video is not vertical (${stream.width}x${stream.height}) — ${platform} requires vertical`,
+      status: "pass",
+      reason: `Video is ${stream.width}x${stream.height}, not vertical — Instagram accepts this for ${platform} and will crop/letterbox it to fit rather than reject it`,
     };
   } finally {
     await rm(dir, { recursive: true, force: true });
