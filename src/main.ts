@@ -1,3 +1,16 @@
+import { webcrypto } from "node:crypto";
+
+// @nestjs/schedule reads the global `crypto.randomUUID()` (the Web Crypto
+// API global) at module-init time. That global isn't defined by default on
+// Node 18 (only turned on without a flag starting in Node 19) — Railway
+// currently runs Node 18.20.5, which crashed the app on every boot with
+// "ReferenceError: crypto is not defined" the moment ScheduleModule
+// initialized. Polyfill it before AppModule (and therefore ScheduleModule)
+// loads below, rather than depending on a Railway Node-version bump.
+if (!globalThis.crypto) {
+  (globalThis as unknown as { crypto: typeof webcrypto }).crypto = webcrypto;
+}
+
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";
