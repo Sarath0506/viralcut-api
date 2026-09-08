@@ -27,6 +27,7 @@ function makeService() {
     {} as never, // faqs
     {} as never, // adminRoles
     {} as never, // marketplace
+    {} as never, // payouts
   );
   return { service, prisma, realtime };
 }
@@ -183,6 +184,7 @@ describe("AdminService.payoutCampaign", () => {
       {} as never, // faqs
       {} as never, // adminRoles
       {} as never, // marketplace
+      {} as never, // payouts
     );
     return { service, prisma, tx, wallet, notifications, realtime };
   }

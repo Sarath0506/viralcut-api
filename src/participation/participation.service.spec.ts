@@ -34,6 +34,7 @@ function makePrisma() {
       findMany: vi.fn(),
       create: vi.fn(),
     },
+    payoutMethod: { findFirst: vi.fn() },
     $transaction: vi.fn(),
     $queryRaw: vi.fn().mockResolvedValue([{ total: 0n }]),
   };
@@ -52,6 +53,7 @@ function makeRealtime() {
     emitDeliverableSubmitted: vi.fn(),
     emitDeliverableReviewed: vi.fn(),
     emitDeliverableLiveProof: vi.fn(),
+    emitDeliverableMetricsUpdated: vi.fn(),
     emitCampaignUpdated: vi.fn(),
   };
 }
@@ -62,19 +64,45 @@ function makeCreatorProfiles() {
   };
 }
 
+function makeAutoReview() {
+  return {
+    runProofPipeline: vi.fn().mockResolvedValue(undefined),
+    runDraftPipeline: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function makeInstagramOAuth() {
+  return {
+    getMediaInsightsForPost: vi.fn().mockResolvedValue(null),
+  };
+}
+
 describe("ParticipationService", () => {
   let prisma: ReturnType<typeof makePrisma>;
   let campaignAccess: ReturnType<typeof makeCampaignAccess>;
   let realtime: ReturnType<typeof makeRealtime>;
   let creatorProfiles: ReturnType<typeof makeCreatorProfiles>;
+  let autoReview: ReturnType<typeof makeAutoReview>;
+  let instagramOAuth: ReturnType<typeof makeInstagramOAuth>;
   let apify: { getViewCount: ReturnType<typeof vi.fn> };
   let service: ParticipationService;
 
   beforeEach(() => {
     prisma = makePrisma();
+    // Default: creator already has complete bank details on file, so the
+    // join-gate check (added alongside making PAN mandatory) doesn't
+    // interfere with tests unrelated to that gate. Tests that specifically
+    // exercise the gate override this per-case.
+    prisma.payoutMethod.findFirst.mockResolvedValue({
+      id: "payout-1",
+      type: "bank",
+      panNumber: "ABCPV1234D",
+    });
     campaignAccess = makeCampaignAccess();
     realtime = makeRealtime();
     creatorProfiles = makeCreatorProfiles();
+    autoReview = makeAutoReview();
+    instagramOAuth = makeInstagramOAuth();
     apify = { getViewCount: vi.fn().mockResolvedValue({ viewCount: 0, platform: "unknown" }) };
     service = new ParticipationService(
       prisma as never,
@@ -84,14 +112,33 @@ describe("ParticipationService", () => {
       { log: async () => undefined } as never,
       { create: async () => undefined } as never,
       creatorProfiles as never,
-      {
-        runProofPipeline: async () => undefined,
-        runDraftPipeline: async () => undefined,
-      } as never,
+      autoReview as never,
+      instagramOAuth as never,
     );
   });
 
   describe("joinCampaign", () => {
+    it("rejects the join when the creator has no bank payout method on file", async () => {
+      prisma.payoutMethod.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.joinCampaign("creator-1", "camp-1", "profile-1"),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.campaign.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("rejects the join when the bank method exists but has no PAN on file", async () => {
+      prisma.payoutMethod.findFirst.mockResolvedValue({
+        id: "payout-1",
+        type: "bank",
+        panNumber: null,
+      });
+
+      await expect(
+        service.joinCampaign("creator-1", "camp-1", "profile-1"),
+      ).rejects.toThrow(BadRequestException);
+    });
+
     it("creates participation with deliverables per platform", async () => {
       prisma.campaign.findFirst.mockResolvedValue({
         id: "camp-1",
@@ -412,6 +459,36 @@ describe("ParticipationService", () => {
 
       expect(result.currentUser).toBeNull();
     });
+
+    it("excludes soft-deleted creators from the query", async () => {
+      prisma.campaign.findUnique.mockResolvedValue({
+        ratePer1kPaise: 5000,
+        maxPayoutPaise: 100000,
+      });
+      prisma.campaignParticipation.findMany.mockResolvedValue([]);
+
+      await service.getLeaderboard("camp-1");
+
+      expect(prisma.campaignParticipation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { campaignId: "camp-1", creator: { isActive: true } },
+        }),
+      );
+    });
+  });
+
+  describe("getOverallLeaderboard", () => {
+    it("excludes soft-deleted creators from the query", async () => {
+      prisma.campaignParticipation.findMany.mockResolvedValue([]);
+
+      await service.getOverallLeaderboard("user-1");
+
+      expect(prisma.campaignParticipation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { creator: { isActive: true } },
+        }),
+      );
+    });
   });
 
   describe("submitDraft", () => {
@@ -577,9 +654,11 @@ describe("ParticipationService", () => {
         id: "d1",
         creatorId: undefined as unknown, // set per-call below
         status: FormatDeliverableStatus.live_submitted,
+        platform: "instagram_reel",
         livePostUrl: "https://instagram.com/reel/1",
         participation: {
           creatorId: "creator-1",
+          creatorProfileId: "profile-1",
           campaign: {
             id: "camp-1",
             status: CampaignStatus.live,
@@ -595,9 +674,66 @@ describe("ParticipationService", () => {
       return { ...base, ...overrides };
     }
 
+    it("uses Instagram Insights exclusively — never calls Apify — when the creator's connected account has the post", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
+        viewCount: 42_000, reach: 40_000, likeCount: 100, commentCount: 5, shareCount: 2, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 42_000, reach: 40_000, likeCount: 100, commentCount: 5, shareCount: 2,
+      });
+
+      const result = await service.refreshDeliverableViews("creator-1", "d1");
+
+      expect(instagramOAuth.getMediaInsightsForPost).toHaveBeenCalledWith(
+        "profile-1",
+        "https://instagram.com/reel/1",
+      );
+      expect(apify.getViewCount).not.toHaveBeenCalled();
+      expect(result.viewCount).toBe(42_000);
+      expect(result.metricsSource).toBe("instagram_insights");
+    });
+
+    it("reports zero metrics with metricsSource: unavailable when Instagram Insights has no data — never falls back to Apify", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue(null);
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 0, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0,
+      });
+
+      const result = await service.refreshDeliverableViews("creator-1", "d1");
+
+      expect(apify.getViewCount).not.toHaveBeenCalled();
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { viewCount: 0, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0 },
+        }),
+      );
+      expect(result.viewCount).toBe(0);
+      expect(result.metricsSource).toBe("unavailable");
+    });
+
+    it("uses Apify (not Instagram Insights) for non-Instagram platforms", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(
+        mockDeliverable({ platform: "youtube_shorts", livePostUrl: "https://youtube.com/shorts/abc" } as never),
+      );
+      apify.getViewCount.mockResolvedValue({
+        viewCount: 5_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "youtube",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 5_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0,
+      });
+
+      const result = await service.refreshDeliverableViews("creator-1", "d1");
+
+      expect(instagramOAuth.getMediaInsightsForPost).not.toHaveBeenCalled();
+      expect(apify.getViewCount).toHaveBeenCalledWith("https://youtube.com/shorts/abc");
+      expect(result.metricsSource).toBe("apify");
+    });
+
     it("reports payoutCapped: false when the estimate is under maxPayoutPaise", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
-      apify.getViewCount.mockResolvedValue({
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
         viewCount: 10_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
       });
       prisma.formatDeliverable.update.mockResolvedValue({
@@ -611,7 +747,7 @@ describe("ParticipationService", () => {
 
     it("reports payoutCapped: true once the estimate reaches maxPayoutPaise, even though views keep climbing", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
-      apify.getViewCount.mockResolvedValue({
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
         viewCount: 500_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
       });
       prisma.formatDeliverable.update.mockResolvedValue({
@@ -627,7 +763,7 @@ describe("ParticipationService", () => {
 
     it("closes intake at 80% pool utilization without pausing the campaign", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
-      apify.getViewCount.mockResolvedValue({
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
         viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
       });
       prisma.formatDeliverable.update.mockResolvedValue({
@@ -658,7 +794,7 @@ describe("ParticipationService", () => {
       const deliverable = mockDeliverable();
       deliverable.participation.campaign.newClipperIntakeStatus = NewClipperIntakeStatus.manually_extended;
       prisma.formatDeliverable.findUnique.mockResolvedValue(deliverable);
-      apify.getViewCount.mockResolvedValue({
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
         viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
       });
       prisma.formatDeliverable.update.mockResolvedValue({
@@ -677,7 +813,7 @@ describe("ParticipationService", () => {
 
     it("still auto-pauses at 100% and reports paused status in the realtime payload", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue(mockDeliverable());
-      apify.getViewCount.mockResolvedValue({
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
         viewCount: 1_000, reach: 0, likeCount: 0, commentCount: 0, shareCount: 0, platform: "instagram",
       });
       prisma.formatDeliverable.update.mockResolvedValue({
@@ -693,6 +829,139 @@ describe("ParticipationService", () => {
       });
       expect(realtime.emitCampaignUpdated).toHaveBeenCalledWith(
         expect.objectContaining({ id: "camp-1", status: CampaignStatus.paused, poolUtilizationBps: 10000 }),
+      );
+    });
+  });
+
+  describe("refreshActiveDeliverableMetrics (background sweep)", () => {
+    function trackableDeliverable(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "d1",
+        status: FormatDeliverableStatus.proof_under_review,
+        platform: "instagram_reel",
+        livePostUrl: "https://instagram.com/reel/1",
+        participation: {
+          id: "part-1",
+          creatorId: "creator-1",
+          creatorProfileId: "profile-1",
+          campaignId: "camp-1",
+          campaign: {
+            id: "camp-1",
+            status: CampaignStatus.live,
+            budgetPaise: 1_000_000,
+            brandProfileId: "brand-1",
+            ratePer1kPaise: 1_000,
+            maxPayoutPaise: 50_000,
+            newClipperIntakeStatus: NewClipperIntakeStatus.open as NewClipperIntakeStatus,
+            poolThresholdBps: 8000,
+          },
+        },
+        ...overrides,
+      };
+    }
+
+    async function runSweepWithFakeTimers() {
+      vi.useFakeTimers();
+      const promise = service.refreshActiveDeliverableMetrics();
+      await vi.runAllTimersAsync();
+      await promise;
+      vi.useRealTimers();
+    }
+
+    it("does nothing when there are no trackable deliverables", async () => {
+      prisma.formatDeliverable.findMany.mockResolvedValue([]);
+
+      await runSweepWithFakeTimers();
+
+      expect(prisma.formatDeliverable.update).not.toHaveBeenCalled();
+      expect(instagramOAuth.getMediaInsightsForPost).not.toHaveBeenCalled();
+    });
+
+    it("never throws — even when the initial deliverable lookup itself fails (e.g. a dropped DB connection)", async () => {
+      // Confirmed live: a transient "Server has closed the connection"
+      // error hitting this exact query silently skipped five consecutive
+      // 5-minute cron cycles with no log at all, since only the per-item
+      // work inside the loop was wrapped in try/catch — not this lookup.
+      prisma.formatDeliverable.findMany.mockRejectedValue(new Error("Server has closed the connection"));
+
+      await expect(runSweepWithFakeTimers()).resolves.toBeUndefined();
+
+      expect(prisma.formatDeliverable.update).not.toHaveBeenCalled();
+    });
+
+    it("refreshes every trackable deliverable and emits metrics_updated for each", async () => {
+      prisma.formatDeliverable.findMany.mockResolvedValue([
+        trackableDeliverable({ id: "d1" }),
+        trackableDeliverable({ id: "d2", livePostUrl: "https://instagram.com/reel/2" }),
+      ]);
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
+        viewCount: 100, reach: 90, likeCount: 10, commentCount: 1, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 100, reach: 90, likeCount: 10, commentCount: 1, shareCount: 0,
+      });
+
+      await runSweepWithFakeTimers();
+
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledTimes(2);
+      expect(realtime.emitDeliverableMetricsUpdated).toHaveBeenCalledTimes(2);
+      expect(realtime.emitDeliverableMetricsUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ deliverableId: "d1", viewCount: 100 }),
+      );
+      // Regression check: a real live sweep over 29 deliverables once
+      // caused 29 separate campaign:updated broadcasts (each one going to
+      // every connected creator app-wide) — which is what showed up as
+      // screens reloading multiple times in a row. Nothing changed the
+      // pool's intake status here, so this must emit zero of them, not
+      // one per deliverable.
+      expect(realtime.emitCampaignUpdated).not.toHaveBeenCalled();
+    });
+
+    it("emits campaign:updated at most once per campaign even when several of its deliverables are refreshed in the same sweep", async () => {
+      prisma.formatDeliverable.findMany.mockResolvedValue([
+        trackableDeliverable({ id: "d1" }),
+        trackableDeliverable({ id: "d2", livePostUrl: "https://instagram.com/reel/2" }),
+        trackableDeliverable({ id: "d3", livePostUrl: "https://instagram.com/reel/3" }),
+      ]);
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
+        viewCount: 100, reach: 90, likeCount: 10, commentCount: 1, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1", viewCount: 100, reach: 90, likeCount: 10, commentCount: 1, shareCount: 0,
+      });
+      // Pool usage past the 80% threshold — a genuine intake-status change,
+      // so this is exactly the case where campaign:updated SHOULD fire.
+      prisma.$queryRaw.mockResolvedValue([{ total: 850_000n }]);
+
+      await runSweepWithFakeTimers();
+
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledTimes(3);
+      // All three deliverables share campaign-1 — one broadcast, not three.
+      expect(realtime.emitCampaignUpdated).toHaveBeenCalledTimes(1);
+      expect(realtime.emitCampaignUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "camp-1", newClipperIntakeStatus: NewClipperIntakeStatus.closed_at_threshold }),
+      );
+    });
+
+    it("continues the sweep past one deliverable's failure — one bad post doesn't stop the rest", async () => {
+      prisma.formatDeliverable.findMany.mockResolvedValue([
+        trackableDeliverable({ id: "d1", platform: "youtube_shorts", livePostUrl: "https://youtube.com/shorts/bad" }),
+        trackableDeliverable({ id: "d2" }),
+      ]);
+      apify.getViewCount.mockRejectedValueOnce(new Error("scrape failed"));
+      instagramOAuth.getMediaInsightsForPost.mockResolvedValue({
+        viewCount: 50, reach: 40, likeCount: 5, commentCount: 0, shareCount: 0, platform: "instagram",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d2", viewCount: 50, reach: 40, likeCount: 5, commentCount: 0, shareCount: 0,
+      });
+
+      await expect(runSweepWithFakeTimers()).resolves.toBeUndefined();
+
+      // d1 (youtube, throws) never got persisted; d2 (instagram, succeeds) still did.
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledTimes(1);
+      expect(realtime.emitDeliverableMetricsUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ deliverableId: "d2" }),
       );
     });
   });
@@ -801,6 +1070,94 @@ describe("ParticipationService", () => {
           "wrong  aspect ratio",
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe("setAdminDraftCopy", () => {
+    it("checks campaign access before saving the url", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.under_review,
+        participation: { campaign: { id: "camp-1" } },
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.under_review,
+      });
+
+      await service.setAdminDraftCopy(
+        "brand-1",
+        UserRole.brand,
+        "d1",
+        "https://pub-example.r2.dev/admin-draft-copies/x.mp4",
+      );
+
+      expect(campaignAccess.assertCanAccessCampaign).toHaveBeenCalled();
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "d1" },
+          data: { adminUploadedDraftUrl: "https://pub-example.r2.dev/admin-draft-copies/x.mp4" },
+        }),
+      );
+    });
+
+    it("re-triggers the draft pipeline when the deliverable is still under_review", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.under_review,
+        participation: { campaign: { id: "camp-1" } },
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.under_review,
+      });
+
+      await service.setAdminDraftCopy("brand-1", UserRole.brand, "d1", "https://example.com/x.mp4");
+
+      expect(autoReview.runDraftPipeline).toHaveBeenCalledWith("d1");
+      expect(autoReview.runProofPipeline).not.toHaveBeenCalled();
+    });
+
+    it("re-triggers the proof pipeline when the deliverable is at the proof stage", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.proof_under_review,
+        participation: { campaign: { id: "camp-1" } },
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.proof_under_review,
+      });
+
+      await service.setAdminDraftCopy("brand-1", UserRole.brand, "d1", "https://example.com/x.mp4");
+
+      expect(autoReview.runProofPipeline).toHaveBeenCalledWith("d1");
+      expect(autoReview.runDraftPipeline).not.toHaveBeenCalled();
+    });
+
+    it("does not re-trigger any pipeline once the deliverable is already fully reviewed", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.draft_approved,
+        participation: { campaign: { id: "camp-1" } },
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        id: "d1",
+        status: FormatDeliverableStatus.draft_approved,
+      });
+
+      await service.setAdminDraftCopy("brand-1", UserRole.brand, "d1", "https://example.com/x.mp4");
+
+      expect(autoReview.runDraftPipeline).not.toHaveBeenCalled();
+      expect(autoReview.runProofPipeline).not.toHaveBeenCalled();
+    });
+
+    it("throws when the deliverable doesn't exist", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.setAdminDraftCopy("brand-1", UserRole.brand, "missing", "https://example.com/x.mp4"),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });

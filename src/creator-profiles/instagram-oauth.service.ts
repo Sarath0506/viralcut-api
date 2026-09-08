@@ -16,6 +16,7 @@ import {
   randomBytes,
 } from "node:crypto";
 
+import type { PlatformViewResult } from "../common/apify.service";
 import type { Env } from "../config/env";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreatorProfilesService } from "./creator-profiles.service";
@@ -110,6 +111,17 @@ function sha256(value: string): string {
 function tokenExpiry(expiresIn?: number): Date | null {
   if (!expiresIn || !Number.isFinite(expiresIn)) return null;
   return new Date(Date.now() + expiresIn * 1000);
+}
+
+/** Extracts the shortcode from an Instagram post/reel URL (the part that
+ * uniquely identifies it — e.g. "Cxyz123" from ".../reel/Cxyz123/?utm=..."),
+ * so a creator-submitted live post URL can be matched against the
+ * account's own media permalinks regardless of trailing slash, query
+ * params, or www./non-www. differences. Returns null for a URL that isn't
+ * a recognizable Instagram post/reel link. */
+function extractInstagramShortcode(url: string): string | null {
+  const match = url.match(/instagram\.com\/(?:[^/]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+  return match?.[1] ?? null;
 }
 
 function escapeHtml(value: string): string {
@@ -588,6 +600,79 @@ export class InstagramOAuthService {
       },
     });
     return refreshed.accessToken;
+  }
+
+  /** Real, first-party metrics for one specific live post via Instagram's
+   * official Insights API — used as a preferred alternative to the Apify
+   * scrape when the creator has connected their own Instagram account.
+   * Requires the connection's token to actually carry the
+   * instagram_business_manage_insights scope, which only creators who
+   * *reconnected* after that scope was added to INSTAGRAM_OAUTH_SCOPES will
+   * have — an existing connection from before that change doesn't
+   * retroactively gain it. Returns null on any failure (no connection,
+   * insufficient permission, the post isn't among the account's recent
+   * media, network error) so callers can fall back to the existing Apify
+   * path rather than break the view-refresh flow. */
+  async getMediaInsightsForPost(
+    creatorProfileId: string,
+    livePostUrl: string,
+  ): Promise<PlatformViewResult | null> {
+    const targetShortcode = extractInstagramShortcode(livePostUrl);
+    if (!targetShortcode) return null;
+
+    const connection = await this.prisma.instagramConnection.findUnique({
+      where: { creatorProfileId },
+    });
+    if (!connection || !connection.isConnected) return null;
+
+    try {
+      const accessToken = await this.getValidAccessToken(creatorProfileId);
+      const token = encodeURIComponent(accessToken);
+
+      // Only the account's own most-recent media is searched — same
+      // 25-item window fetchProfileAndMedia uses. A post that's fallen out
+      // of that window (many newer posts since) won't be found here and
+      // falls back to Apify, same as a post from an unconnected account.
+      const mediaRes = await this.instagramGraphFetch<InstagramMediaResponse>(
+        `${this.graphBase}/${encodeURIComponent(connection.platformUserId)}/media?fields=id,permalink&limit=25&access_token=${token}`,
+      );
+      const match = (mediaRes.data ?? []).find(
+        (m) => m.permalink && extractInstagramShortcode(m.permalink) === targetShortcode,
+      );
+      if (!match) {
+        this.logger.warn(`No Instagram media match for ${livePostUrl} in profile ${creatorProfileId}'s recent posts`);
+        return null;
+      }
+
+      const metricsRes = await this.instagramGraphFetch<{
+        data?: Array<{
+          name: string;
+          values?: Array<{ value: number }>;
+          total_value?: { value: number };
+        }>;
+        error?: InstagramGraphError;
+      }>(
+        `${this.graphBase}/${encodeURIComponent(match.id)}/insights?metric=reach,likes,comments,shares,saved,views&access_token=${token}`,
+      );
+      if (!metricsRes.data) return null;
+
+      const metricValue = (name: string): number => {
+        const entry = metricsRes.data!.find((m) => m.name === name);
+        return entry?.total_value?.value ?? entry?.values?.[0]?.value ?? 0;
+      };
+
+      return {
+        viewCount: metricValue("views"),
+        reach: metricValue("reach"),
+        likeCount: metricValue("likes"),
+        commentCount: metricValue("comments"),
+        shareCount: metricValue("shares"),
+        platform: "instagram",
+      };
+    } catch (err) {
+      this.logger.warn(`Instagram Insights fetch failed for ${livePostUrl}: ${err}`);
+      return null;
+    }
   }
 
   private async refreshAccessToken(

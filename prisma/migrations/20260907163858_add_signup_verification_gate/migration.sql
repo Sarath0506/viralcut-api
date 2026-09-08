@@ -1,0 +1,17 @@
+-- AlterTable
+ALTER TABLE "users" ADD COLUMN     "aadhaar_document_url" TEXT,
+ADD COLUMN     "aadhaar_failure_reason" TEXT,
+ADD COLUMN     "aadhaar_masked_number" TEXT,
+ADD COLUMN     "aadhaar_verification_status" "KycStatus" NOT NULL DEFAULT 'not_started',
+ADD COLUMN     "aadhaar_verified_at" TIMESTAMP(3),
+ADD COLUMN     "aadhaar_verified_name" TEXT,
+ADD COLUMN     "instagram_rejection_reason" TEXT,
+ADD COLUMN     "instagram_review_status" "KycStatus" NOT NULL DEFAULT 'not_started',
+ADD COLUMN     "instagram_reviewed_at" TIMESTAMP(3),
+ADD COLUMN     "instagram_reviewed_by_user_id" TEXT,
+ADD COLUMN     "pan_failure_reason" TEXT,
+ADD COLUMN     "pan_number" TEXT,
+ADD COLUMN     "pan_verification_status" "KycStatus" NOT NULL DEFAULT 'not_started',
+ADD COLUMN     "pan_verified_at" TIMESTAMP(3),
+ADD COLUMN     "pan_verified_name" TEXT,
+ADD COLUMN     "requires_onboarding_gate" BOOLEAN NOT NULL DEFAULT false;

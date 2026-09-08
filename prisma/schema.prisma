@@ -122,6 +122,14 @@ enum AutoReviewStage {
   proof
 }
 
+enum SourceAssetRequirement {
+  mandatory
+
+  optional
+
+  not_required
+}
+
 enum TransactionType {
   earning_credit
 
@@ -230,6 +238,52 @@ model User {
   kycReviewedAt DateTime? @map("kyc_reviewed_at")
 
   kycRejectionReason String? @map("kyc_rejection_reason")
+
+  // Signup verification gate (PAN + Aadhaar auto-verified via Cashfree,
+  // Instagram manually reviewed by an admin) — a newer, separate flow
+  // from the generic kyc* fields above. Only enforced for accounts where
+  // requiresOnboardingGate is true; existing users at the time this
+  // shipped are grandfathered in with it false, so they're never
+  // retroactively locked out.
+  requiresOnboardingGate Boolean @default(false) @map("requires_onboarding_gate")
+
+  panNumber String? @map("pan_number")
+
+  panDocumentUrl String? @map("pan_document_url")
+
+  panVerificationStatus KycStatus @default(not_started) @map("pan_verification_status")
+
+  panVerifiedName String? @map("pan_verified_name")
+
+  panVerifiedAt DateTime? @map("pan_verified_at")
+
+  panFailureReason String? @map("pan_failure_reason")
+
+  // The uploaded Aadhaar image is kept only long enough to run the OCR
+  // verification call — see CashfreeVerificationService — never the raw
+  // Aadhaar number itself, only a masked last-4 reference.
+  aadhaarDocumentUrl String? @map("aadhaar_document_url")
+
+  aadhaarVerificationStatus KycStatus @default(not_started) @map("aadhaar_verification_status")
+
+  aadhaarVerifiedName String? @map("aadhaar_verified_name")
+
+  aadhaarMaskedNumber String? @map("aadhaar_masked_number")
+
+  aadhaarVerifiedAt DateTime? @map("aadhaar_verified_at")
+
+  aadhaarFailureReason String? @map("aadhaar_failure_reason")
+
+  // Instagram itself is real (OAuth-connected, see InstagramConnection) —
+  // this tracks the separate admin judgment call of whether that account
+  // looks like a genuine clipper, not an outsider.
+  instagramReviewStatus KycStatus @default(not_started) @map("instagram_review_status")
+
+  instagramReviewedAt DateTime? @map("instagram_reviewed_at")
+
+  instagramReviewedByUserId String? @map("instagram_reviewed_by_user_id")
+
+  instagramRejectionReason String? @map("instagram_rejection_reason")
 
   // Null = Super Admin (full, unrestricted access) — the default for every
   // existing admin so assigning this feature never silently locks anyone
@@ -548,6 +602,10 @@ model Campaign {
 
   sourceAssets Json? @map("source_assets")
 
+  sourceVideoRequirement SourceAssetRequirement @default(mandatory) @map("source_video_requirement")
+
+  sourceAudioRequirement SourceAssetRequirement @default(not_required) @map("source_audio_requirement")
+
   referenceAssets Json? @map("reference_assets")
 
   coverImageUrl String? @map("cover_image_url")
@@ -573,6 +631,8 @@ model Campaign {
   maxRepostsPerClip Int? @default(5) @map("max_reposts_per_clip")
 
   complianceChecklist Json? @map("compliance_checklist")
+
+  autoReviewEnabled Boolean @default(true) @map("auto_review_enabled")
 
   startDate DateTime? @map("start_date")
 
@@ -877,6 +937,14 @@ model FormatDeliverable {
 
   draftDriveUrl String? @map("draft_drive_url")
 
+  /** A copy of the source video the brand/admin uploaded themselves — for
+   * when draftDriveUrl is a Google Drive link the auto-review pipeline can't
+   * fetch (Drive links need OAuth/service-account access and don't reliably
+   * return raw bytes for a plain HTTP fetch). When set, the auto-review
+   * pipeline reads this instead of draftDriveUrl; draftDriveUrl itself is
+   * untouched — it stays the creator's actual submission record. */
+  adminUploadedDraftUrl String? @map("admin_uploaded_draft_url")
+
   livePostUrl String? @map("live_post_url")
 
   status FormatDeliverableStatus @default(draft_pending)
@@ -1065,6 +1133,8 @@ model PayoutMethod {
   ifscCode String? @map("ifsc_code")
 
   bankName String? @map("bank_name")
+
+  panNumber String? @map("pan_number")
 
   accountMasked String @map("account_masked")
 

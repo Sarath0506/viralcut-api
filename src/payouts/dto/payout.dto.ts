@@ -46,6 +46,14 @@ export class CreatePayoutMethodDto {
   @IsString()
   @MaxLength(100)
   bankName?: string;
+
+  @ApiProperty({ example: "ABCPV1234D", description: "Required for bank accounts — used for TDS/tax reporting on payouts" })
+  @ValidateIf((dto: CreatePayoutMethodDto) => dto.type === "bank")
+  @IsString()
+  @Matches(/^[A-Z]{5}[0-9]{4}[A-Z]$/, {
+    message: "panNumber must be a valid PAN (e.g. ABCPV1234D)",
+  })
+  panNumber?: string;
 }
 
 export class UpdatePayoutMethodDto {
@@ -75,6 +83,14 @@ export class UpdatePayoutMethodDto {
   @IsString()
   @MaxLength(80)
   label?: string;
+
+  @ApiPropertyOptional({ example: "ABCPV1234D" })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Z]{5}[0-9]{4}[A-Z]$/, {
+    message: "panNumber must be a valid PAN (e.g. ABCPV1234D)",
+  })
+  panNumber?: string;
 }
 
 export class CreateWithdrawalDto {
@@ -115,6 +131,9 @@ export class PayoutMethodDto {
 
   @ApiPropertyOptional()
   bankName?: string | null;
+
+  @ApiPropertyOptional()
+  panNumber?: string | null;
 
   @ApiProperty()
   isDefault!: boolean;
