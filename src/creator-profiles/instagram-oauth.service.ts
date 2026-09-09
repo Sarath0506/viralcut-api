@@ -8,7 +8,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Prisma } from "@prisma/client";
+import { KycStatus, Prisma } from "@prisma/client";
 import {
   createCipheriv,
   createDecipheriv,
@@ -366,6 +366,28 @@ export class InstagramOAuthService {
           completedAt: lastSyncedAt,
         },
       });
+
+      // A previously-rejected clipper reconnecting (same or a different
+      // account — the upsert above already replaced whatever was there)
+      // is a fresh submission and needs a human to look at it again. Only
+      // touches the rejected case — an already-verified creator updating
+      // their linked account elsewhere in the app (connected_accounts_screen)
+      // shouldn't get bounced back into review just for that.
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { instagramReviewStatus: true },
+      });
+      if (user?.instagramReviewStatus === KycStatus.rejected) {
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            instagramReviewStatus: KycStatus.pending,
+            instagramRejectionReason: null,
+            instagramReviewedAt: null,
+            instagramReviewedByUserId: null,
+          },
+        });
+      }
     });
 
     return {
