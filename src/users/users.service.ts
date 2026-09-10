@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
@@ -172,42 +171,30 @@ export class UsersService {
     userId: string,
     data: {
       displayName?: string;
-      phone?: string;
       bio?: string;
       avatarUrl?: string;
       socialLinks?: Record<string, string>;
     },
   ) {
-    try {
-      const updated = await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          ...(data.displayName !== undefined && { displayName: data.displayName }),
-          ...(data.phone !== undefined && { phone: data.phone }),
-          ...(data.bio !== undefined && { bio: data.bio }),
-          ...(data.avatarUrl !== undefined && { avatarUrl: data.avatarUrl }),
-          ...(data.socialLinks !== undefined && {
-            socialLinks: data.socialLinks as Prisma.InputJsonValue,
-          }),
-        },
-      });
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(data.displayName !== undefined && { displayName: data.displayName }),
+        ...(data.bio !== undefined && { bio: data.bio }),
+        ...(data.avatarUrl !== undefined && { avatarUrl: data.avatarUrl }),
+        ...(data.socialLinks !== undefined && {
+          socialLinks: data.socialLinks as Prisma.InputJsonValue,
+        }),
+      },
+    });
 
-      return {
-        displayName: updated.displayName,
-        phone: updated.phone,
-        bio: updated.bio,
-        avatarUrl: updated.avatarUrl,
-        socialLinks: (updated.socialLinks as Record<string, string> | null) ?? null,
-      };
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        throw new ConflictException({
-          code: "CONFLICT",
-          message: "Phone number already in use",
-        });
-      }
-      throw error;
-    }
+    return {
+      displayName: updated.displayName,
+      phone: updated.phone,
+      bio: updated.bio,
+      avatarUrl: updated.avatarUrl,
+      socialLinks: (updated.socialLinks as Record<string, string> | null) ?? null,
+    };
   }
 
   async fetchAndStoreSocialStats(
