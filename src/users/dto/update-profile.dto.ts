@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { IsObject, IsOptional, IsString, Matches, MaxLength, MinLength } from "class-validator";
+import { IsObject, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 
 export class UpdateProfileDto {
   @ApiPropertyOptional()
@@ -8,13 +8,9 @@ export class UpdateProfileDto {
   @MaxLength(80)
   displayName?: string;
 
-  @ApiPropertyOptional({ example: "+919876543210" })
-  @IsOptional()
-  @IsString()
-  @Matches(/^\+91[6-9]\d{9}$/, {
-    message: "Phone must be E.164 India format (+91XXXXXXXXXX)",
-  })
-  phone?: string;
+  // phone is intentionally not editable here — it's the OTP-verified login
+  // identity, and this endpoint has no re-verification step. Changing it
+  // needs its own OTP-gated flow, not a field on the general profile form.
 
   @ApiPropertyOptional()
   @IsOptional()
