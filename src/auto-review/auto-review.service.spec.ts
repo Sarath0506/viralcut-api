@@ -860,6 +860,7 @@ describe("AutoReviewService", () => {
       // real Prisma results could be) — the merge step must still process
       // them oldest-submitted-first across both stages combined.
       prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (where.autoReviewResults?.some) return Promise.resolve([]); // no stuck candidates in this test
         if (where.status === "under_review") {
           return Promise.resolve([
             { id: "draft-newer", draftSubmittedAt: new Date("2026-01-01T12:00:00Z") },
@@ -902,5 +903,64 @@ describe("AutoReviewService", () => {
       },
       10_000, // 10 items × the sweep's own 500ms courtesy pause between each
     );
+
+    it("retries a deliverable stuck on needs_review with no Tier 2 check — a transient checklist failure", async () => {
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]); // no backlog in this test
+        return Promise.resolve([
+          {
+            id: "stuck-checklist-failure",
+            status: "under_review",
+            draftSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            liveSubmittedAt: null,
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                // format_match resolved fine (the draft WAS fetchable) — the
+                // only reason tier2Results is null is the checklist call
+                // itself failing, which is exactly the transient case worth
+                // retrying.
+                tier1Results: [{ gate: "format_match", status: "pass", reason: "Vertical video" }],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, draftDriveUrl: null });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "stuck-checklist-failure" } }),
+      );
+    });
+
+    it("does not retry a deliverable whose needs_review is a genuine unresolved gate (e.g. an un-fetchable Drive link)", async () => {
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "genuinely-unresolved",
+            status: "under_review",
+            draftSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            liveSubmittedAt: null,
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                tier1Results: [
+                  { gate: "format_match", status: "unresolved", reason: "Draft is not an app-uploaded file" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
+    });
   });
 });

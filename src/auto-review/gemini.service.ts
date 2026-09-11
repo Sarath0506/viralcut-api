@@ -61,53 +61,73 @@ export class GeminiService {
     avoidRules: string | null;
   }): Promise<ChecklistItem[] | null> {
     if (!this.client) return null;
-    try {
-      const parts: string[] = [`BRIEF:\n${input.brief}`];
-      if (input.doRules) parts.push(`DO:\n${input.doRules}`);
-      if (input.avoidRules) parts.push(`AVOID:\n${input.avoidRules}`);
+    // A blank/empty response from Gemini here has been observed live with
+    // no thrown error and no apparent content-related cause — reproducing
+    // the exact same brief immediately after succeeded, pointing at
+    // ordinary API flakiness rather than something about the input. A
+    // failure here silently strands the deliverable on needs_review with
+    // no Tier 2 check ever attempted (getOrCreateChecklist doesn't cache a
+    // failure, but nothing re-attempts until the next fresh submission
+    // either) — worth a couple of quick retries before giving up for real.
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const parts: string[] = [`BRIEF:\n${input.brief}`];
+        if (input.doRules) parts.push(`DO:\n${input.doRules}`);
+        if (input.avoidRules) parts.push(`AVOID:\n${input.avoidRules}`);
 
-      const res = await this.withTimeout(this.client.models.generateContent({
-        model: MODEL,
-        contents:
-          "You turn a brand campaign brief into a short list of individually-checkable " +
-          "compliance criteria for reviewing clipper-submitted video content against. " +
-          "Each item should be a single, concrete, checkable statement (not vague). " +
-          "Cover both the DO and AVOID sections where present. Keep it to 3-8 items.\n\n" +
-          "Only include criteria that are directly and explicitly stated in the text below — " +
-          "never infer, generalize, or split a single stated requirement into several. " +
-          "If the brief says 'app store' (singular, unqualified), that is exactly one " +
-          "criterion — do not also add a separate Play Store requirement, or any other " +
-          "platform/variant the brief didn't name. When in doubt, leave it out rather than " +
-          "add a requirement the brand never actually asked for.\n\n" +
-          parts.join("\n\n"),
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                label: { type: Type.STRING },
-                source: { type: Type.STRING, enum: ["brief", "doRules", "avoidRules"] },
+        const res = await this.withTimeout(this.client.models.generateContent({
+          model: MODEL,
+          contents:
+            "You turn a brand campaign brief into a short list of individually-checkable " +
+            "compliance criteria for reviewing clipper-submitted video content against. " +
+            "Each item should be a single, concrete, checkable statement (not vague). " +
+            "Cover both the DO and AVOID sections where present. Keep it to 3-8 items.\n\n" +
+            "Only include criteria that are directly and explicitly stated in the text below — " +
+            "never infer, generalize, or split a single stated requirement into several. " +
+            "If the brief says 'app store' (singular, unqualified), that is exactly one " +
+            "criterion — do not also add a separate Play Store requirement, or any other " +
+            "platform/variant the brief didn't name. When in doubt, leave it out rather than " +
+            "add a requirement the brand never actually asked for.\n\n" +
+            parts.join("\n\n"),
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  label: { type: Type.STRING },
+                  source: { type: Type.STRING, enum: ["brief", "doRules", "avoidRules"] },
+                },
+                required: ["label", "source"],
               },
-              required: ["label", "source"],
             },
           },
-        },
-      }), "deriveChecklist");
+        }), "deriveChecklist");
 
-      const raw = JSON.parse(res.text ?? "[]") as Array<{ label: string; source: string }>;
-      return raw.map((item, i) => ({
-        id: `c${i + 1}`,
-        label: item.label,
-        source: (["brief", "doRules", "avoidRules"] as const).includes(item.source as any)
-          ? (item.source as ChecklistItem["source"])
-          : "brief",
-      }));
-    } catch (err) {
-      this.logger.warn(`deriveChecklist failed: ${err}`);
-      return null;
+        const raw = JSON.parse(res.text ?? "[]") as Array<{ label: string; source: string }>;
+        if (raw.length === 0 && attempt < maxAttempts) {
+          this.logger.warn(`deriveChecklist returned no items (attempt ${attempt}/${maxAttempts}) — retrying`);
+          continue;
+        }
+        return raw.map((item, i) => ({
+          id: `c${i + 1}`,
+          label: item.label,
+          source: (["brief", "doRules", "avoidRules"] as const).includes(item.source as any)
+            ? (item.source as ChecklistItem["source"])
+            : "brief",
+        }));
+      } catch (err) {
+        if (attempt < maxAttempts) {
+          this.logger.warn(`deriveChecklist failed (attempt ${attempt}/${maxAttempts}), retrying: ${err}`);
+          continue;
+        }
+        this.logger.warn(`deriveChecklist failed: ${err}`);
+        return null;
+      }
     }
+    return null;
   }
 
   /** Evaluates a video (+ caption) against a checklist — per-criterion
