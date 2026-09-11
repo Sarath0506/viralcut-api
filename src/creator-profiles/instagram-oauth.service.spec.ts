@@ -122,7 +122,7 @@ describe("InstagramOAuthService.getMediaInsightsForPost", () => {
     expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("/media-42/insights"), expect.anything());
   });
 
-  it("returns null when the post isn't among the account's recent media (fallback to Apify is the caller's job)", async () => {
+  it("returns null when the post isn't found within the page cap (no Apify fallback — Instagram-only)", async () => {
     prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       makeResponse({ data: [{ id: "other-media", permalink: "https://www.instagram.com/reel/Different1/" }] }),
@@ -134,6 +134,57 @@ describe("InstagramOAuthService.getMediaInsightsForPost", () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it("pages further back when the post isn't on the first page", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes("after=cursor-page-2")) {
+        // Second page: the actual post, further back than the first 100.
+        return makeResponse({ data: [{ id: "media-old", permalink: "https://www.instagram.com/reel/OldPost1/" }] });
+      }
+      if (u.includes("/media?")) {
+        // First page: no match, but says there's more.
+        return makeResponse({
+          data: [{ id: "other-media", permalink: "https://www.instagram.com/reel/Different1/" }],
+          paging: { next: "https://graph.instagram.com/v23.0/ig-user-1/media?after=cursor-page-2" },
+        });
+      }
+      if (u.includes("/insights?")) {
+        return makeResponse({ data: [{ name: "views", total_value: { value: 500 } }] });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+
+    const result = await service.getMediaInsightsForPost(
+      "profile-1",
+      "https://www.instagram.com/reel/OldPost1/",
+    );
+
+    expect(result?.viewCount).toBe(500);
+    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("after=cursor-page-2"), expect.anything());
+  });
+
+  it("stops paginating after the page cap instead of following paging.next forever", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
+    let pageCount = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      pageCount++;
+      return makeResponse({
+        data: [{ id: `media-${pageCount}`, permalink: "https://www.instagram.com/reel/NeverThere/" }],
+        paging: { next: `https://graph.instagram.com/v23.0/ig-user-1/media?after=page-${pageCount + 1}` },
+      });
+    });
+
+    const result = await service.getMediaInsightsForPost(
+      "profile-1",
+      "https://www.instagram.com/reel/WontBeFound/",
+    );
+
+    expect(result).toBeNull();
+    // Only the /media list calls happen here (never reaches /insights), so this count is the page count.
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
   });
 
   it("returns null (never throws) when the Graph API denies the insights permission", async () => {
