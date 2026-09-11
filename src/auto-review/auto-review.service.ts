@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Cron, CronExpression } from "@nestjs/schedule";
 import { FormatDeliverableStatus, SourceAssetRequirement } from "@prisma/client";
 
 import { ApifyService } from "../common/apify.service";
@@ -156,6 +157,77 @@ export class AutoReviewService {
       }
     } catch (err) {
       this.logger.error(`Draft auto-review failed for deliverable ${deliverableId}: ${err}`);
+    }
+  }
+
+  /** submitDraft/submitLiveProof trigger the pipeline once, fire-and-forget,
+   * at the exact moment of submission — if AUTO_REVIEW_ENABLED was off at
+   * that instant (or the process crashed mid-run), that submission is never
+   * retried; nothing else ever revisits it. Confirmed live: two real
+   * submissions made while the flag was off got permanently skipped, with
+   * no trace beyond a debug log line, until manually re-triggered.
+   *
+   * This sweep is the backfill: on every run it finds deliverables still
+   * sitting in a reviewable status with zero AutoReviewResult rows at all
+   * (a resubmission is a different case — submitDraft/submitLiveProof
+   * re-trigger the pipeline directly for that, so this only ever needs to
+   * catch a submission that was *never* evaluated once) and processes them
+   * oldest-submitted-first, first in first served, same as a human
+   * reviewer's queue would. Bounded per run so a large backlog can't burn
+   * through the Gemini/Apify rate limit in one pass — the remainder just
+   * waits for the next cycle. */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async catchUpMissedAutoReviews(): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      const maxPerRun = 10;
+      const [draftBacklog, proofBacklog] = await Promise.all([
+        this.prisma.formatDeliverable.findMany({
+          where: {
+            status: FormatDeliverableStatus.under_review,
+            autoReviewResults: { none: {} },
+          },
+          orderBy: { draftSubmittedAt: "asc" },
+          take: maxPerRun,
+          select: { id: true, draftSubmittedAt: true },
+        }),
+        this.prisma.formatDeliverable.findMany({
+          where: {
+            status: {
+              in: [FormatDeliverableStatus.live_submitted, FormatDeliverableStatus.proof_under_review],
+            },
+            autoReviewResults: { none: {} },
+          },
+          orderBy: { liveSubmittedAt: "asc" },
+          take: maxPerRun,
+          select: { id: true, liveSubmittedAt: true },
+        }),
+      ]);
+
+      // Merge both queues into one first-submitted-first-served order,
+      // capped at maxPerRun total so one sweep can't overrun the rate limit.
+      const queue = [
+        ...draftBacklog.map((d) => ({ id: d.id, stage: "draft" as const, submittedAt: d.draftSubmittedAt! })),
+        ...proofBacklog.map((d) => ({ id: d.id, stage: "proof" as const, submittedAt: d.liveSubmittedAt! })),
+      ]
+        .sort((a, b) => a.submittedAt.getTime() - b.submittedAt.getTime())
+        .slice(0, maxPerRun);
+
+      if (queue.length === 0) return;
+
+      this.logger.log(`catchUpMissedAutoReviews: processing ${queue.length} never-evaluated deliverable(s)`);
+      for (const item of queue) {
+        if (item.stage === "draft") {
+          await this.runDraftPipeline(item.id);
+        } else {
+          await this.runProofPipeline(item.id);
+        }
+        // Same courtesy pause the metrics sweep uses — this is an unattended
+        // background catch-up, not a human waiting on a response.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } catch (err) {
+      this.logger.error(`catchUpMissedAutoReviews failed: ${err}`);
     }
   }
 
