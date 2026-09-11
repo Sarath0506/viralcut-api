@@ -73,6 +73,12 @@ export class GeminiService {
           "compliance criteria for reviewing clipper-submitted video content against. " +
           "Each item should be a single, concrete, checkable statement (not vague). " +
           "Cover both the DO and AVOID sections where present. Keep it to 3-8 items.\n\n" +
+          "Only include criteria that are directly and explicitly stated in the text below — " +
+          "never infer, generalize, or split a single stated requirement into several. " +
+          "If the brief says 'app store' (singular, unqualified), that is exactly one " +
+          "criterion — do not also add a separate Play Store requirement, or any other " +
+          "platform/variant the brief didn't name. When in doubt, leave it out rather than " +
+          "add a requirement the brand never actually asked for.\n\n" +
           parts.join("\n\n"),
         config: {
           responseMimeType: "application/json",
