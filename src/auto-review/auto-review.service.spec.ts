@@ -1059,5 +1059,68 @@ describe("AutoReviewService", () => {
 
       expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
     });
+
+    it("retries a proof stuck on needs_review when draft_live_match is the only unresolved gate and ownership is verified", async () => {
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "stuck-live-match",
+            status: "proof_under_review",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                tier1Results: [
+                  { gate: "resolves_and_public", status: "pass", reason: "resolved" },
+                  { gate: "platform_match", status: "pass", reason: "matches" },
+                  { gate: "ownership_verified", status: "pass", reason: "matches connected account" },
+                  { gate: "draft_live_match", status: "unresolved", reason: "Could not compare draft and live content" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, livePostUrl: null });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "stuck-live-match" } }),
+      );
+    });
+
+    it("does not retry a stuck draft_live_match when ownership itself is still unresolved", async () => {
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "unverified-ownership",
+            status: "proof_under_review",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                tier1Results: [
+                  { gate: "resolves_and_public", status: "pass", reason: "resolved" },
+                  { gate: "platform_match", status: "pass", reason: "matches" },
+                  { gate: "ownership_verified", status: "unresolved", reason: "needs a human to check" },
+                  { gate: "draft_live_match", status: "unresolved", reason: "Could not compare draft and live content" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
+    });
   });
 });
