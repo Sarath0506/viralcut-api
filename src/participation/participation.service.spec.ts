@@ -475,6 +475,70 @@ describe("ParticipationService", () => {
         }),
       );
     });
+
+    it("shows a verified creator's permanent id instead of their real name", async () => {
+      prisma.campaign.findUnique.mockResolvedValue({
+        ratePer1kPaise: 5000,
+        maxPayoutPaise: 100000,
+      });
+      prisma.campaignParticipation.findMany.mockResolvedValue([
+        {
+          creator: {
+            id: "user-1",
+            displayName: "Ravi Kumar",
+            username: "ravi",
+            avatarUrl: null,
+            verifiedCreatorId: "482910384",
+          },
+          creatorProfile: { id: "profile-a", platform: "instagram", handle: "ravi_main", label: null },
+          deliverables: [{ viewCount: 1000, paidAmountPaise: null }],
+        },
+        {
+          creator: {
+            id: "user-2",
+            displayName: "Priya Singh",
+            username: "priya",
+            avatarUrl: null,
+            verifiedCreatorId: null,
+          },
+          creatorProfile: { id: "profile-b", platform: "instagram", handle: "priya_x", label: null },
+          deliverables: [{ viewCount: 500, paidAmountPaise: null }],
+        },
+      ]);
+
+      const result = await service.getLeaderboard("camp-1");
+
+      expect(result.entries.find((e) => e.creatorProfileId === "profile-a")?.displayName).toBe(
+        "Creator #482910384",
+      );
+      expect(result.entries.find((e) => e.creatorProfileId === "profile-b")?.displayName).toBe(
+        "Priya Singh",
+      );
+    });
+
+    it("still prefers a brand-set profile label over the verified id", async () => {
+      prisma.campaign.findUnique.mockResolvedValue({
+        ratePer1kPaise: 5000,
+        maxPayoutPaise: 100000,
+      });
+      prisma.campaignParticipation.findMany.mockResolvedValue([
+        {
+          creator: {
+            id: "user-1",
+            displayName: "Ravi Kumar",
+            username: "ravi",
+            avatarUrl: null,
+            verifiedCreatorId: "482910384",
+          },
+          creatorProfile: { id: "profile-a", platform: "instagram", handle: "ravi_main", label: "Meme page" },
+          deliverables: [{ viewCount: 1000, paidAmountPaise: null }],
+        },
+      ]);
+
+      const result = await service.getLeaderboard("camp-1");
+
+      expect(result.entries[0].displayName).toBe("Meme page");
+    });
   });
 
   describe("getOverallLeaderboard", () => {
@@ -487,6 +551,44 @@ describe("ParticipationService", () => {
         expect.objectContaining({
           where: { creator: { isActive: true } },
         }),
+      );
+    });
+
+    it("shows a verified creator's permanent id instead of their real name", async () => {
+      prisma.campaignParticipation.findMany.mockResolvedValue([
+        {
+          creatorId: "user-1",
+          creator: {
+            id: "user-1",
+            displayName: "Ravi Kumar",
+            username: "ravi",
+            avatarUrl: null,
+            verifiedCreatorId: "482910384",
+          },
+          campaign: { ratePer1kPaise: 5000, maxPayoutPaise: 100000 },
+          deliverables: [{ viewCount: 1000, paidAmountPaise: null }],
+        },
+        {
+          creatorId: "user-2",
+          creator: {
+            id: "user-2",
+            displayName: "Priya Singh",
+            username: "priya",
+            avatarUrl: null,
+            verifiedCreatorId: null,
+          },
+          campaign: { ratePer1kPaise: 5000, maxPayoutPaise: 100000 },
+          deliverables: [{ viewCount: 500, paidAmountPaise: null }],
+        },
+      ]);
+
+      const result = await service.getOverallLeaderboard("user-1");
+
+      expect(result.entries.find((e) => e.creatorId === "user-1")?.displayName).toBe(
+        "Creator #482910384",
+      );
+      expect(result.entries.find((e) => e.creatorId === "user-2")?.displayName).toBe(
+        "Priya Singh",
       );
     });
   });

@@ -285,6 +285,15 @@ model User {
 
   instagramRejectionReason String? @map("instagram_rejection_reason")
 
+  // A permanent, randomly-generated 9-digit public identifier — assigned
+  // once, the first time this creator's Instagram gets verified, and shown
+  // in place of their real name on leaderboards from then on (real names +
+  // real earnings, publicly visible to every other creator, was the
+  // problem this solves). One per person (User), not per CreatorProfile —
+  // every profile they connect afterward shares this same number. Never
+  // reassigned or regenerated once set. Null until verified.
+  verifiedCreatorId String? @unique @map("verified_creator_id")
+
   // Null = Super Admin (full, unrestricted access) — the default for every
   // existing admin so assigning this feature never silently locks anyone
   // out. Only set for admins deliberately restricted to a custom role.

@@ -783,6 +783,7 @@ export class ParticipationService {
       where: { id: deliverableId },
       include: {
         rejectionEvents: rejectionEventsInclude,
+        autoReviewResults: { orderBy: { createdAt: "desc" } },
         participation: {
           include: {
             campaign: true,
@@ -862,6 +863,20 @@ export class ParticipationService {
         status: s.status,
         draftDriveUrl: s.draftDriveUrl,
         rejectionReason: s.rejectionReason,
+      })),
+      // Shadow-mode auto-review history — most recent first, one row per
+      // pipeline run (draft submit, proof submit, or a resubmit of either).
+      // Purely informational: never drives status, only what a human sees
+      // alongside their own review. Empty when AUTO_REVIEW_ENABLED is off,
+      // or before the first submission's pipeline run has finished.
+      autoReview: deliverable.autoReviewResults.map((r) => ({
+        id: r.id,
+        stage: r.stage,
+        decision: r.decision,
+        tier1Results: r.tier1Results,
+        tier2Results: r.tier2Results,
+        modelVersion: r.modelVersion,
+        createdAt: r.createdAt.toISOString(),
       })),
     };
   }
@@ -1069,7 +1084,7 @@ export class ParticipationService {
       where: { campaignId, creator: { isActive: true } },
       include: {
         creator: {
-          select: { id: true, displayName: true, username: true, avatarUrl: true },
+          select: { id: true, displayName: true, username: true, avatarUrl: true, verifiedCreatorId: true },
         },
         creatorProfile: {
           select: { id: true, platform: true, handle: true, label: true },
@@ -1092,11 +1107,14 @@ export class ParticipationService {
       return {
         creatorId: p.creator.id,
         creatorProfileId: p.creatorProfile.id,
+        // Same real-name-exposure fix as getOverallLeaderboard — see there
+        // for why. p.creatorProfile.label is a brand-facing nickname, not
+        // relevant to this concern, so it still wins when set.
         displayName:
           p.creatorProfile.label ??
-          p.creator.displayName ??
-          p.creator.username ??
-          "Creator",
+          (p.creator.verifiedCreatorId
+            ? `Creator #${p.creator.verifiedCreatorId}`
+            : (p.creator.displayName ?? p.creator.username ?? "Creator")),
         handle: p.creatorProfile.handle,
         platform: p.creatorProfile.platform,
         avatarUrl: p.creator.avatarUrl,
@@ -1128,7 +1146,7 @@ export class ParticipationService {
       where: { creator: { isActive: true } },
       include: {
         creator: {
-          select: { id: true, displayName: true, username: true, avatarUrl: true },
+          select: { id: true, displayName: true, username: true, avatarUrl: true, verifiedCreatorId: true },
         },
         campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
         deliverables: { select: { viewCount: true, paidAmountPaise: true } },
@@ -1167,7 +1185,14 @@ export class ParticipationService {
       } else {
         byCreator.set(p.creatorId, {
           creatorId: p.creator.id,
-          displayName: p.creator.displayName ?? p.creator.username ?? "Creator",
+          // Verified creators show their permanent public ID instead of
+          // their real name — real name + real earnings, both publicly
+          // visible to every other creator on this same leaderboard, was
+          // the actual problem this solves. Not-yet-verified creators
+          // still show their real name for now.
+          displayName: p.creator.verifiedCreatorId
+            ? `Creator #${p.creator.verifiedCreatorId}`
+            : (p.creator.displayName ?? p.creator.username ?? "Creator"),
           avatarUrl: p.creator.avatarUrl,
           totalViews,
           totalEarnedPaise,

@@ -6,6 +6,7 @@ import { ActivityLogService } from "../activity/activity-log.service";
 import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
 import { computeMarketplaceSplitPaise } from "../common/marketplace-split";
+import { ensureVerifiedCreatorId } from "../common/verified-creator-id";
 import { PrismaService } from "../prisma/prisma.service";
 import { AdminRolesService } from "../admin-roles/admin-roles.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
@@ -846,6 +847,13 @@ export class AdminService {
         instagramRejectionReason: action === "reject" ? reason!.trim() : null,
       },
     });
+
+    // Assigned once, the first time a creator is verified — shown on
+    // leaderboards instead of their real name from then on. A no-op if
+    // they already have one (e.g. a later reconnect-and-reverify).
+    if (action === "approve") {
+      await ensureVerifiedCreatorId(this.prisma, creatorId);
+    }
 
     await this.notifications.create(creatorId, "creator", {
       type: action === "approve" ? "instagram_review_verified" : "instagram_review_rejected",
