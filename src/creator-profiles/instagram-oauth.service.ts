@@ -636,10 +636,19 @@ export class InstagramOAuthService {
    * insufficient permission, the post isn't among the account's recent
    * media, network error) so callers can fall back to the existing Apify
    * path rather than break the view-refresh flow. */
-  async getMediaInsightsForPost(
+  /** Searches a connected account's own media for the item matching a live
+   * post's shortcode — shared by getMediaInsightsForPost (metrics) and
+   * getOwnLivePostMedia (the actual media file, for auto-review's
+   * draft-vs-live comparison). Instagram-only by design — no Apify fallback
+   * — so a post simply not being on the first page isn't good enough reason
+   * to give up: page further back (100/page, the max this edge allows)
+   * until we find it or hit a hard cap on how far we'll look. `fields`
+   * lets each caller request only what it actually needs from the match. */
+  private async findOwnMediaItem(
     creatorProfileId: string,
     livePostUrl: string,
-  ): Promise<PlatformViewResult | null> {
+    fields: string,
+  ): Promise<{ item: InstagramMediaItem; accessToken: string } | null> {
     const targetShortcode = extractInstagramShortcode(livePostUrl);
     if (!targetShortcode) return null;
 
@@ -648,32 +657,36 @@ export class InstagramOAuthService {
     });
     if (!connection || !connection.isConnected) return null;
 
-    try {
-      const accessToken = await this.getValidAccessToken(creatorProfileId);
-      const token = encodeURIComponent(accessToken);
+    const accessToken = await this.getValidAccessToken(creatorProfileId);
+    const token = encodeURIComponent(accessToken);
 
-      // Search the account's own media for a permalink matching this post's
-      // shortcode. Instagram-only by design — no Apify fallback — so a post
-      // simply not being on the first page isn't good enough reason to give
-      // up: page further back (100/page, the max this edge allows) until we
-      // find it or hit a hard cap on how far we'll look.
-      const maxPages = 5; // up to ~500 most recent posts
-      let nextUrl: string | undefined =
-        `${this.graphBase}/${encodeURIComponent(connection.platformUserId)}/media?fields=id,permalink&limit=100&access_token=${token}`;
-      let match: InstagramMediaItem | undefined;
-      for (let page = 0; page < maxPages && nextUrl; page++) {
-        const mediaRes: InstagramMediaResponse =
-          await this.instagramGraphFetch<InstagramMediaResponse>(nextUrl);
-        match = (mediaRes.data ?? []).find(
-          (m) => m.permalink && extractInstagramShortcode(m.permalink) === targetShortcode,
-        );
-        if (match) break;
-        nextUrl = mediaRes.paging?.next;
-      }
-      if (!match) {
+    const maxPages = 5; // up to ~500 most recent posts
+    let nextUrl: string | undefined =
+      `${this.graphBase}/${encodeURIComponent(connection.platformUserId)}/media?fields=${fields}&limit=100&access_token=${token}`;
+    for (let page = 0; page < maxPages && nextUrl; page++) {
+      const mediaRes: InstagramMediaResponse =
+        await this.instagramGraphFetch<InstagramMediaResponse>(nextUrl);
+      const match = (mediaRes.data ?? []).find(
+        (m) => m.permalink && extractInstagramShortcode(m.permalink) === targetShortcode,
+      );
+      if (match) return { item: match, accessToken };
+      nextUrl = mediaRes.paging?.next;
+    }
+    return null;
+  }
+
+  async getMediaInsightsForPost(
+    creatorProfileId: string,
+    livePostUrl: string,
+  ): Promise<PlatformViewResult | null> {
+    try {
+      const found = await this.findOwnMediaItem(creatorProfileId, livePostUrl, "id,permalink");
+      if (!found) {
         this.logger.warn(`No Instagram media match for ${livePostUrl} in profile ${creatorProfileId}'s recent posts`);
         return null;
       }
+      const { item: match, accessToken } = found;
+      const token = encodeURIComponent(accessToken);
 
       const metricsRes = await this.instagramGraphFetch<{
         data?: Array<{
@@ -702,6 +715,38 @@ export class InstagramOAuthService {
       };
     } catch (err) {
       this.logger.warn(`Instagram Insights fetch failed for ${livePostUrl}: ${err}`);
+      return null;
+    }
+  }
+
+  /** The actual media file for a live post, fetched directly from the
+   * connected account's own Graph API data — real, first-party media_url,
+   * not a third-party scrape. Only works when the post is the connected
+   * account's own (same match this account's Insights use), which is
+   * exactly the case auto-review's draft-vs-live comparison needs: by the
+   * time it's called, ownership is already independently verified via this
+   * same connection. Returns the same shape ApifyService.getLivePostMedia
+   * does, so callers can use either interchangeably. */
+  async getOwnLivePostMedia(
+    creatorProfileId: string,
+    livePostUrl: string,
+  ): Promise<{ kind: "video" | "image"; url: string } | null> {
+    try {
+      const found = await this.findOwnMediaItem(
+        creatorProfileId,
+        livePostUrl,
+        "id,permalink,media_type,media_url,thumbnail_url",
+      );
+      if (!found) return null;
+      const { item } = found;
+      if (item.media_type === "VIDEO" && item.media_url) {
+        return { kind: "video", url: item.media_url };
+      }
+      if (item.media_url) return { kind: "image", url: item.media_url };
+      if (item.thumbnail_url) return { kind: "image", url: item.thumbnail_url };
+      return null;
+    } catch (err) {
+      this.logger.warn(`getOwnLivePostMedia failed for ${livePostUrl}: ${err}`);
       return null;
     }
   }

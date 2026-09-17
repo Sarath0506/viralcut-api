@@ -5,6 +5,7 @@ import { FormatDeliverableStatus, SourceAssetRequirement } from "@prisma/client"
 
 import { ApifyService } from "../common/apify.service";
 import type { Env } from "../config/env";
+import { InstagramOAuthService } from "../creator-profiles/instagram-oauth.service";
 import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import type { DeliverableEventPayload } from "../realtime/realtime.service";
@@ -120,6 +121,7 @@ export class AutoReviewService {
     private readonly config: ConfigService<Env, true>,
     private readonly realtime: RealtimeService,
     private readonly notifications: InAppNotificationService,
+    private readonly instagramOAuth: InstagramOAuthService,
   ) {}
 
   private get enabled(): boolean {
@@ -331,6 +333,7 @@ export class AutoReviewService {
         title: "Draft approved 🎉",
         body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} was approved. Post it live and submit the link to get paid.`,
         link: `/participations/${deliverable.participation.id}`,
+        sendWhatsapp: true,
       });
       this.logger.log(`Auto-approved draft for deliverable ${deliverableId}`);
       return;
@@ -360,6 +363,7 @@ export class AutoReviewService {
       title: "Draft needs changes",
       body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes: ${reason}`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
     this.logger.log(`Auto-rejected draft for deliverable ${deliverableId}: ${reason}`);
   }
@@ -422,6 +426,7 @@ export class AutoReviewService {
         title: "Proof approved — payout on the way",
         body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was verified. Payout will be processed shortly.`,
         link: `/participations/${deliverable.participation.id}`,
+        sendWhatsapp: true,
       });
       this.logger.log(`Auto-approved proof for deliverable ${deliverableId}`);
       return;
@@ -442,6 +447,7 @@ export class AutoReviewService {
       title: "Proof rejected",
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected: ${reason}`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
     this.logger.log(`Auto-rejected proof for deliverable ${deliverableId}: ${reason}`);
   }
@@ -491,10 +497,23 @@ export class AutoReviewService {
       this.getConnection(creatorProfileId, platform),
       fetchableDraftUrl ? fetchMedia(fetchableDraftUrl) : Promise.resolve(null),
     ]);
+    const ownershipGate = evaluateOwnershipGate(connection, author);
 
     let liveComparison: { same: boolean; confidence: number; reason: string } | null = null;
     if (draftMedia) {
-      const liveMedia = await this.apify.getLivePostMedia(livePostUrl);
+      // Prefer the connected account's own Graph API media_url — real,
+      // first-party data — over Apify/HikerAPI's scraped preview, which
+      // isn't always available for a given post. Only usable once ownership
+      // is independently verified (same connection, so no extra trust
+      // assumed), and Instagram-only since that's the only platform with a
+      // real OAuth connection to draw on here. Confirmed live: this exact
+      // gap (Apify returning no preview) was why a real, ownership-verified
+      // submission stayed stuck on needs_review with nothing else wrong.
+      const liveMedia =
+        platform === "instagram" && ownershipGate.status === "pass"
+          ? (await this.instagramOAuth.getOwnLivePostMedia(creatorProfileId, livePostUrl)) ??
+            (await this.apify.getLivePostMedia(livePostUrl))
+          : await this.apify.getLivePostMedia(livePostUrl);
       if (liveMedia) {
         const liveMediaFetched = await fetchMedia(liveMedia.url);
         if (liveMediaFetched) {
@@ -511,7 +530,7 @@ export class AutoReviewService {
     const tier1Results: GateResult[] = [
       evaluateResolvesGate(resolution),
       evaluatePlatformMatchGate(platform, deliverable.platform),
-      evaluateOwnershipGate(connection, author),
+      ownershipGate,
       evaluateDraftLiveMatchGate(liveComparison),
     ];
 

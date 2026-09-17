@@ -50,6 +50,12 @@ function makeNotifications() {
   return { create: vi.fn().mockResolvedValue(undefined) };
 }
 
+function makeInstagramOAuth() {
+  // Defaults to "nothing found here", so every existing test's Apify-based
+  // behavior is unaffected unless a test explicitly overrides this.
+  return { getOwnLivePostMedia: vi.fn().mockResolvedValue(null) };
+}
+
 function makeConfig(enabled: boolean, enforceEnabled = false) {
   return {
     get: vi.fn((key: string) => (key === "AUTO_REVIEW_ENFORCE_ENABLED" ? enforceEnabled : enabled)),
@@ -74,6 +80,7 @@ describe("AutoReviewService", () => {
   let checklist: ReturnType<typeof makeChecklist>;
   let realtime: ReturnType<typeof makeRealtime>;
   let notifications: ReturnType<typeof makeNotifications>;
+  let instagramOAuth: ReturnType<typeof makeInstagramOAuth>;
   let service: AutoReviewService;
 
   function build(enabled = true, enforceEnabled = false) {
@@ -83,6 +90,7 @@ describe("AutoReviewService", () => {
     checklist = makeChecklist();
     realtime = makeRealtime();
     notifications = makeNotifications();
+    instagramOAuth = makeInstagramOAuth();
     service = new AutoReviewService(
       prisma as never,
       apify as never,
@@ -91,6 +99,7 @@ describe("AutoReviewService", () => {
       makeConfig(enabled, enforceEnabled) as never,
       realtime as never,
       notifications as never,
+      instagramOAuth as never,
     );
   }
 
@@ -141,6 +150,94 @@ describe("AutoReviewService", () => {
       const call = prisma.autoReviewResult.create.mock.calls[0][0];
       expect(call.data.decision).toBe("needs_review");
       expect(call.data.tier2Results).toBeUndefined();
+    });
+
+    it("prefers the connected account's own Graph API media over Apify's scrape once ownership is verified", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        ...baseDeliverable,
+        draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
+      });
+      prisma.instagramConnection.findUnique.mockResolvedValue({
+        platformHandle: "creator",
+        platformUserId: "1",
+      });
+      apify.getPostAuthor.mockResolvedValue({ handle: "creator", platformUserId: "1" });
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(
+          async () =>
+            new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
+        );
+      instagramOAuth.getOwnLivePostMedia.mockResolvedValue({
+        kind: "video",
+        url: "https://graph.example.com/own-media.mp4",
+      });
+      gemini.compareDraftToLive.mockResolvedValue({ same: true, confidence: 0.9, reason: "matches" });
+
+      await service.runProofPipeline("deliverable-1");
+
+      expect(instagramOAuth.getOwnLivePostMedia).toHaveBeenCalledWith(
+        "profile-1",
+        "https://www.instagram.com/reel/abc123/",
+      );
+      expect(apify.getLivePostMedia).not.toHaveBeenCalled();
+      expect(fetchSpy).toHaveBeenCalledWith("https://graph.example.com/own-media.mp4", expect.anything());
+      expect(gemini.compareDraftToLive).toHaveBeenCalledWith(
+        expect.objectContaining({ liveMediaKind: "video" }),
+      );
+      fetchSpy.mockRestore();
+    });
+
+    it("falls back to Apify's scrape when the connected account has no matching media for this post", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        ...baseDeliverable,
+        draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
+      });
+      prisma.instagramConnection.findUnique.mockResolvedValue({
+        platformHandle: "creator",
+        platformUserId: "1",
+      });
+      apify.getPostAuthor.mockResolvedValue({ handle: "creator", platformUserId: "1" });
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(
+          async () =>
+            new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
+        );
+      instagramOAuth.getOwnLivePostMedia.mockResolvedValue(null);
+      apify.getLivePostMedia.mockResolvedValue({ kind: "video", url: "https://apify.example.com/scraped.mp4" });
+      gemini.compareDraftToLive.mockResolvedValue({ same: true, confidence: 0.9, reason: "matches" });
+
+      await service.runProofPipeline("deliverable-1");
+
+      expect(instagramOAuth.getOwnLivePostMedia).toHaveBeenCalled();
+      expect(apify.getLivePostMedia).toHaveBeenCalledWith("https://www.instagram.com/reel/abc123/");
+      expect(fetchSpy).toHaveBeenCalledWith("https://apify.example.com/scraped.mp4", expect.anything());
+      fetchSpy.mockRestore();
+    });
+
+    it("never queries the connected account's media when ownership isn't verified — goes straight to Apify", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        ...baseDeliverable,
+        draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
+      });
+      // No matching connection/author — ownership stays unresolved, not "pass".
+      prisma.instagramConnection.findUnique.mockResolvedValue(null);
+      apify.getPostAuthor.mockResolvedValue(null);
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(
+          async () =>
+            new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
+        );
+      apify.getLivePostMedia.mockResolvedValue({ kind: "video", url: "https://apify.example.com/scraped.mp4" });
+      gemini.compareDraftToLive.mockResolvedValue({ same: true, confidence: 0.9, reason: "matches" });
+
+      await service.runProofPipeline("deliverable-1");
+      fetchSpy.mockRestore();
+
+      expect(instagramOAuth.getOwnLivePostMedia).not.toHaveBeenCalled();
+      expect(apify.getLivePostMedia).toHaveBeenCalledWith("https://www.instagram.com/reel/abc123/");
     });
   });
 
