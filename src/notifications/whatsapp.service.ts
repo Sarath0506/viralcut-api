@@ -121,6 +121,16 @@ export class WhatsappService {
       const text = await response.text();
       throw new Error(`${response.status} ${text}`);
     }
+
+    // sendOtp/sendWhatsAppTemplate below never logged success either, but
+    // that one's on a tight, well-understood path (one call site, always
+    // right after signup). This one fans out from many places (draft/proof
+    // approved/rejected, new campaigns, ...) — a silent success made a real
+    // "did we even try" question impossible to answer from the logs alone.
+    // Meta's returned message id lets a future investigation correlate this
+    // send with its delivery-status webhook instead of guessing.
+    const result = (await response.json().catch(() => null)) as { messages?: { id: string }[] } | null;
+    this.logger.log(`WhatsApp general update sent to ...${phone.slice(-4)}: message id ${result?.messages?.[0]?.id ?? "unknown"}`);
   }
 
   private async sendWhatsAppTemplate(phone: string, code: string): Promise<void> {
