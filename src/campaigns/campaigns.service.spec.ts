@@ -1,10 +1,18 @@
-import { CampaignOwnership, CampaignStatus, CampaignWizardStep, NewClipperIntakeStatus } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import { CampaignOwnership, CampaignStatus, CampaignWizardStep, NewClipperIntakeStatus, UserRole } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
 
 import { CampaignsService } from "./campaigns.service";
 
-function makeService() {
-  return new CampaignsService({} as never, {} as never, {} as never, {} as never);
+function makePrisma() {
+  return { user: { findMany: vi.fn().mockResolvedValue([]) } };
+}
+
+function makeNotifications() {
+  return { create: vi.fn().mockResolvedValue(undefined) };
+}
+
+function makeService(prisma: ReturnType<typeof makePrisma> = makePrisma(), notifications: ReturnType<typeof makeNotifications> = makeNotifications()) {
+  return new CampaignsService(prisma as never, {} as never, {} as never, {} as never, notifications as never);
 }
 
 function baseCampaign(overrides: Partial<Parameters<CampaignsService["formatCampaign"]>[0]> = {}) {
@@ -85,5 +93,58 @@ describe("CampaignsService.formatCampaign", () => {
       }),
     );
     expect(result.newClipperIntakeStatus).toBe(NewClipperIntakeStatus.closed_at_threshold);
+  });
+});
+
+describe("CampaignsService.notifyCreatorsOfNewCampaign", () => {
+  function invoke(service: CampaignsService, campaign: { id: string; title: string }) {
+    (service as unknown as { notifyCreatorsOfNewCampaign(c: { id: string; title: string }): void })
+      .notifyCreatorsOfNewCampaign(campaign);
+  }
+
+  it("notifies only active creators, with push+WhatsApp and a link back to the campaign", async () => {
+    const prisma = makePrisma();
+    prisma.user.findMany.mockResolvedValue([{ id: "creator-1" }, { id: "creator-2" }]);
+    const notifications = makeNotifications();
+    const service = makeService(prisma, notifications);
+
+    invoke(service, { id: "camp-1", title: "Summer Drop" });
+
+    await vi.waitFor(() => expect(notifications.create).toHaveBeenCalledTimes(2));
+
+    expect(prisma.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { role: UserRole.creator, isActive: true } }),
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      "creator-1",
+      "creator",
+      expect.objectContaining({
+        type: "campaign_live",
+        link: "/campaigns/camp-1",
+        sendWhatsapp: true,
+        body: expect.stringContaining("Summer Drop"),
+      }),
+    );
+  });
+
+  it("keeps notifying the rest of the batch when one creator's send fails", async () => {
+    const prisma = makePrisma();
+    prisma.user.findMany.mockResolvedValue([{ id: "creator-1" }, { id: "creator-2" }]);
+    const notifications = makeNotifications();
+    notifications.create.mockRejectedValueOnce(new Error("push+whatsapp both down")).mockResolvedValueOnce(undefined);
+    const service = makeService(prisma, notifications);
+
+    invoke(service, { id: "camp-1", title: "Summer Drop" });
+
+    await vi.waitFor(() => expect(notifications.create).toHaveBeenCalledTimes(2));
+    expect(notifications.create).toHaveBeenNthCalledWith(2, "creator-2", "creator", expect.anything());
+  });
+
+  it("never throws synchronously, even if the creator lookup itself fails", () => {
+    const prisma = makePrisma();
+    prisma.user.findMany.mockRejectedValue(new Error("db down"));
+    const service = makeService(prisma, makeNotifications());
+
+    expect(() => invoke(service, { id: "camp-1", title: "Summer Drop" })).not.toThrow();
   });
 });
