@@ -83,6 +83,9 @@ export class UsersService {
       socialLinks: (user.socialLinks as Record<string, string> | null) ?? null,
       socialStats: (user.socialStats as Record<string, unknown> | null) ?? null,
       requiresOnboardingGate: user.requiresOnboardingGate,
+      // Permanent, assigned once on first Instagram verification — see
+      // ensureVerifiedCreatorId. Null until then.
+      verifiedCreatorId: user.verifiedCreatorId,
       // Instagram-only for now — PAN/Aadhaar auto-verification (via
       // Cashfree) stays fully built and submittable, just not required to
       // clear the gate, since the Cashfree account's balance is currently
