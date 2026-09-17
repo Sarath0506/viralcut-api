@@ -940,6 +940,7 @@ export class ParticipationService {
         title: "Draft approved 🎉",
         body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} was approved. Post it live and submit the link to get paid.`,
         link: `/participations/${deliverable.participation.id}`,
+        sendWhatsapp: true,
       });
       return { id: updated.id, status: updated.status };
     }
@@ -1008,6 +1009,7 @@ export class ParticipationService {
       title: "Draft needs changes",
       body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes: ${trimmedReason}`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
     return { id: updated.id, status: updated.status };
   }
@@ -1264,6 +1266,7 @@ export class ParticipationService {
       title: "Proof approved — payout on the way",
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was verified. Payout will be processed shortly.`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
 
     return { id: updated.id, status: updated.status };
@@ -1310,6 +1313,7 @@ export class ParticipationService {
       title: "Proof rejected",
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected: ${reason}`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
 
     return { id: updated.id, status: updated.status };

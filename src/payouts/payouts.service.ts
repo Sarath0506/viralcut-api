@@ -361,6 +361,7 @@ export class PayoutsService {
       title: "Withdrawal processed",
       body: `₹${(netPaise / 100).toFixed(2)} is on its way to your ${payoutMethod.label}.`,
       link: "/wallet",
+      sendWhatsapp: true,
     });
 
     return this.formatWithdrawal(completed);

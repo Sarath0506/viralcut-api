@@ -865,6 +865,7 @@ export class AdminService {
           ? "Your Instagram account has been verified."
           : `Your Instagram verification was rejected: ${reason!.trim()}`,
       link: "/verification",
+      sendWhatsapp: true,
     });
     this.realtime.emitOnboardingVerificationUpdated(creatorId);
 
