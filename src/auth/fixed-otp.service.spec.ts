@@ -17,6 +17,17 @@ function makeService(
 }
 
 describe("FixedOtpService", () => {
+  it.each(["+919876543211", "+919876543210"])(
+    "returns the reviewer bypass code for %s in production, without a DB lookup",
+    async (phone) => {
+      const prisma = { user: { findUnique: vi.fn() } };
+      const service = makeService(prisma, { NODE_ENV: "production" });
+
+      await expect(service.getFixedCodeForPhone(phone)).resolves.toBe("000000");
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    },
+  );
+
   it("returns dev bypass code for any phone in development", async () => {
     const prisma = {
       user: { findUnique: vi.fn() },

@@ -11,10 +11,14 @@ export class FixedOtpService {
     private readonly config: ConfigService<Env, true>,
   ) {}
 
-  // App Store / Play Store reviewer test account — works in ALL environments.
+  // App Store / Play Store reviewer test accounts — work in ALL environments.
   // Reviewers cannot receive real WhatsApp OTPs during the review process.
+  // Two accounts (not one) since a reviewer often needs to exercise both a
+  // brand and a creator flow, or a fresh-signup vs. already-onboarded path,
+  // in the same review pass.
   private static readonly REVIEWER_ACCOUNTS: Record<string, string> = {
     "+919876543211": "000000",
+    "+919876543210": "000000",
   };
 
   /**
