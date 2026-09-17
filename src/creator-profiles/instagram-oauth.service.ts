@@ -721,12 +721,13 @@ export class InstagramOAuthService {
 
   /** The actual media file for a live post, fetched directly from the
    * connected account's own Graph API data — real, first-party media_url,
-   * not a third-party scrape. Only works when the post is the connected
-   * account's own (same match this account's Insights use), which is
-   * exactly the case auto-review's draft-vs-live comparison needs: by the
-   * time it's called, ownership is already independently verified via this
-   * same connection. Returns the same shape ApifyService.getLivePostMedia
-   * does, so callers can use either interchangeably. */
+   * not a third-party scrape (there is no scrape fallback for this anymore
+   * — Apify/HikerAPI's live-media lookup was removed once this replaced
+   * it). Only works when the post is the connected account's own (same
+   * match this account's Insights use), which is exactly the case
+   * auto-review's draft-vs-live comparison needs: by the time it's called,
+   * ownership is already independently verified via this same
+   * connection. */
   async getOwnLivePostMedia(
     creatorProfileId: string,
     livePostUrl: string,

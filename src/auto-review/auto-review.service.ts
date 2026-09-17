@@ -169,7 +169,7 @@ export class AutoReviewService {
    * submissions made while the flag was off got permanently skipped, with
    * no trace beyond a debug log line, until manually re-triggered.
    *
-   * This sweep is the backfill, covering two distinct gaps:
+   * This sweep is the backfill, covering three distinct gaps:
    *  1. Zero AutoReviewResult rows at all — never evaluated once (the flag
    *     was off, or the process crashed mid-run).
    *  2. Exactly one result, decision needs_review, tier2Results null, and
@@ -180,8 +180,15 @@ export class AutoReviewService {
    *     retry) rather than a genuine "can't check this" case like an
    *     un-fetchable Drive link (which shows up as an unresolved Tier 1
    *     gate instead, and retrying that wouldn't help).
-   * A resubmission is a different case in both — submitDraft/submitLiveProof
-   * re-trigger the pipeline directly for that. Both gaps are merged into one
+   *  3. Same shape, but the ONLY unresolved Tier 1 gate is draft_live_match
+   *     with ownership_verified already passed — that gate depends on a
+   *     live CDN fetch plus a Gemini call, so it fails the same transient
+   *     way checklist derivation does, not a structural limit. Confirmed
+   *     live: a real ownership-verified Instagram proof stuck exactly this
+   *     way (Apify's scrape came back empty for that one post) succeeded
+   *     immediately on manual retry.
+   * A resubmission is a different case in all three — submitDraft/submitLiveProof
+   * re-trigger the pipeline directly for that. All three gaps are merged into one
    * first-submitted-first-served queue, oldest first, same as a human
    * reviewer's queue would be. Bounded per run so a large backlog can't burn
    * through the Gemini/Apify rate limit in one pass — the remainder just
@@ -225,10 +232,24 @@ export class AutoReviewService {
           const latest = d.autoReviewResults[0];
           if (!latest || latest.decision !== "needs_review" || latest.tier2Results !== null) return false;
           const tier1 = latest.tier1Results as GateResult[] | null;
-          // Only retry when every Tier 1 gate actually resolved (the draft
-          // itself was fetchable) — an unresolved gate means the pipeline
-          // genuinely can't check this yet, and retrying won't change that.
-          return Array.isArray(tier1) && tier1.every((g) => g.status !== "unresolved");
+          if (!Array.isArray(tier1)) return false;
+          const unresolved = tier1.filter((g) => g.status === "unresolved");
+          // Normally only retry when every Tier 1 gate actually resolved —
+          // an unresolved gate usually means the pipeline genuinely can't
+          // check this yet, and retrying won't change that (e.g. an
+          // un-fetchable Drive link).
+          if (unresolved.length === 0) return true;
+          // One deliberate exception: draft_live_match, despite living in
+          // tier1Results, depends on a live CDN fetch plus a Gemini call —
+          // the same kind of transient-hiccup surface as checklist
+          // derivation, not a structural limit — once ownership_verified
+          // has already passed (proof the OAuth connection itself is fine).
+          // Confirmed live: a real ownership-verified Instagram proof stuck
+          // exactly this way succeeded on a manual retry moments later.
+          if (unresolved.length === 1 && unresolved[0].gate === "draft_live_match") {
+            return tier1.find((g) => g.gate === "ownership_verified")?.status === "pass";
+          }
+          return false;
         })
         .map((d) => ({
           id: d.id,
@@ -501,19 +522,22 @@ export class AutoReviewService {
 
     let liveComparison: { same: boolean; confidence: number; reason: string } | null = null;
     if (draftMedia) {
-      // Prefer the connected account's own Graph API media_url — real,
-      // first-party data — over Apify/HikerAPI's scraped preview, which
-      // isn't always available for a given post. Only usable once ownership
-      // is independently verified (same connection, so no extra trust
-      // assumed), and Instagram-only since that's the only platform with a
-      // real OAuth connection to draw on here. Confirmed live: this exact
-      // gap (Apify returning no preview) was why a real, ownership-verified
-      // submission stayed stuck on needs_review with nothing else wrong.
+      // Live media comes exclusively from the connected account's own Graph
+      // API media_url now — real, first-party data, Instagram-only since
+      // that's the only platform with a real OAuth connection to draw on
+      // here. Dropped the Apify/HikerAPI scrape fallback entirely: it only
+      // ever covered Instagram anyway (hard-coded no-op for every other
+      // platform), it isn't reliable (confirmed live: it returned no
+      // preview for a real ownership-verified post, which is what this
+      // first-party path replaced), and this way "how did we get this
+      // media" has exactly one answer instead of two. Draft-vs-live stays
+      // unresolved — same as any other platform — whenever ownership isn't
+      // independently verified first; nothing here scrapes a live post on
+      // trust alone anymore.
       const liveMedia =
         platform === "instagram" && ownershipGate.status === "pass"
-          ? (await this.instagramOAuth.getOwnLivePostMedia(creatorProfileId, livePostUrl)) ??
-            (await this.apify.getLivePostMedia(livePostUrl))
-          : await this.apify.getLivePostMedia(livePostUrl);
+          ? await this.instagramOAuth.getOwnLivePostMedia(creatorProfileId, livePostUrl)
+          : null;
       if (liveMedia) {
         const liveMediaFetched = await fetchMedia(liveMedia.url);
         if (liveMediaFetched) {
