@@ -522,19 +522,22 @@ export class AutoReviewService {
 
     let liveComparison: { same: boolean; confidence: number; reason: string } | null = null;
     if (draftMedia) {
-      // Prefer the connected account's own Graph API media_url — real,
-      // first-party data — over Apify/HikerAPI's scraped preview, which
-      // isn't always available for a given post. Only usable once ownership
-      // is independently verified (same connection, so no extra trust
-      // assumed), and Instagram-only since that's the only platform with a
-      // real OAuth connection to draw on here. Confirmed live: this exact
-      // gap (Apify returning no preview) was why a real, ownership-verified
-      // submission stayed stuck on needs_review with nothing else wrong.
+      // Live media comes exclusively from the connected account's own Graph
+      // API media_url now — real, first-party data, Instagram-only since
+      // that's the only platform with a real OAuth connection to draw on
+      // here. Dropped the Apify/HikerAPI scrape fallback entirely: it only
+      // ever covered Instagram anyway (hard-coded no-op for every other
+      // platform), it isn't reliable (confirmed live: it returned no
+      // preview for a real ownership-verified post, which is what this
+      // first-party path replaced), and this way "how did we get this
+      // media" has exactly one answer instead of two. Draft-vs-live stays
+      // unresolved — same as any other platform — whenever ownership isn't
+      // independently verified first; nothing here scrapes a live post on
+      // trust alone anymore.
       const liveMedia =
         platform === "instagram" && ownershipGate.status === "pass"
-          ? (await this.instagramOAuth.getOwnLivePostMedia(creatorProfileId, livePostUrl)) ??
-            (await this.apify.getLivePostMedia(livePostUrl))
-          : await this.apify.getLivePostMedia(livePostUrl);
+          ? await this.instagramOAuth.getOwnLivePostMedia(creatorProfileId, livePostUrl)
+          : null;
       if (liveMedia) {
         const liveMediaFetched = await fetchMedia(liveMedia.url);
         if (liveMediaFetched) {

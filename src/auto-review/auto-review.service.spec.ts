@@ -27,7 +27,6 @@ function makeApify() {
     checkPostResolves: vi.fn().mockResolvedValue({ status: "resolved" }),
     getPostAuthor: vi.fn().mockResolvedValue(null),
     detectPlatform: vi.fn().mockReturnValue("instagram"),
-    getLivePostMedia: vi.fn().mockResolvedValue(null),
   };
 }
 
@@ -180,7 +179,6 @@ describe("AutoReviewService", () => {
         "profile-1",
         "https://www.instagram.com/reel/abc123/",
       );
-      expect(apify.getLivePostMedia).not.toHaveBeenCalled();
       expect(fetchSpy).toHaveBeenCalledWith("https://graph.example.com/own-media.mp4", expect.anything());
       expect(gemini.compareDraftToLive).toHaveBeenCalledWith(
         expect.objectContaining({ liveMediaKind: "video" }),
@@ -188,7 +186,7 @@ describe("AutoReviewService", () => {
       fetchSpy.mockRestore();
     });
 
-    it("falls back to Apify's scrape when the connected account has no matching media for this post", async () => {
+    it("stays unresolved (no scrape fallback) when the connected account has no matching media for this post", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue({
         ...baseDeliverable,
         draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
@@ -205,18 +203,19 @@ describe("AutoReviewService", () => {
             new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
         );
       instagramOAuth.getOwnLivePostMedia.mockResolvedValue(null);
-      apify.getLivePostMedia.mockResolvedValue({ kind: "video", url: "https://apify.example.com/scraped.mp4" });
-      gemini.compareDraftToLive.mockResolvedValue({ same: true, confidence: 0.9, reason: "matches" });
 
       await service.runProofPipeline("deliverable-1");
+      fetchSpy.mockRestore();
 
       expect(instagramOAuth.getOwnLivePostMedia).toHaveBeenCalled();
-      expect(apify.getLivePostMedia).toHaveBeenCalledWith("https://www.instagram.com/reel/abc123/");
-      expect(fetchSpy).toHaveBeenCalledWith("https://apify.example.com/scraped.mp4", expect.anything());
-      fetchSpy.mockRestore();
+      expect(gemini.compareDraftToLive).not.toHaveBeenCalled();
+      const call = prisma.autoReviewResult.create.mock.calls[0][0];
+      expect(
+        call.data.tier1Results.find((g: { gate: string }) => g.gate === "draft_live_match").status,
+      ).toBe("unresolved");
     });
 
-    it("never queries the connected account's media when ownership isn't verified — goes straight to Apify", async () => {
+    it("never queries the connected account's media when ownership isn't verified — draft_live_match stays unresolved", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue({
         ...baseDeliverable,
         draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
@@ -230,14 +229,12 @@ describe("AutoReviewService", () => {
           async () =>
             new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
         );
-      apify.getLivePostMedia.mockResolvedValue({ kind: "video", url: "https://apify.example.com/scraped.mp4" });
-      gemini.compareDraftToLive.mockResolvedValue({ same: true, confidence: 0.9, reason: "matches" });
 
       await service.runProofPipeline("deliverable-1");
       fetchSpy.mockRestore();
 
       expect(instagramOAuth.getOwnLivePostMedia).not.toHaveBeenCalled();
-      expect(apify.getLivePostMedia).toHaveBeenCalledWith("https://www.instagram.com/reel/abc123/");
+      expect(gemini.compareDraftToLive).not.toHaveBeenCalled();
     });
   });
 
@@ -846,7 +843,7 @@ describe("AutoReviewService", () => {
           async () =>
             new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
         );
-      apify.getLivePostMedia.mockResolvedValue({ kind: "video", url: "https://example.com/live.mp4" });
+      instagramOAuth.getOwnLivePostMedia.mockResolvedValue({ kind: "video", url: "https://example.com/live.mp4" });
       gemini.compareDraftToLive.mockResolvedValue({ same: true, confidence: 0.95, reason: "matches" });
       gemini.evaluateCompliance.mockResolvedValue([
         { criterionId: "c1", label: "x", pass: true, confidence: 0.95, reason: "ok", required: true },
