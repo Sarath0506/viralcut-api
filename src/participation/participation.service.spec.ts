@@ -509,7 +509,7 @@ describe("ParticipationService", () => {
       const result = await service.getLeaderboard("camp-1");
 
       expect(result.entries.find((e) => e.creatorProfileId === "profile-a")?.displayName).toBe(
-        "Creator #482910384",
+        "#482910384",
       );
       expect(result.entries.find((e) => e.creatorProfileId === "profile-b")?.displayName).toBe(
         "Priya Singh",
@@ -549,12 +549,16 @@ describe("ParticipationService", () => {
 
       expect(prisma.campaignParticipation.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { creator: { isActive: true } },
+          where: { creator: { isActive: true, verifiedCreatorId: { not: null } } },
         }),
       );
     });
 
     it("shows a verified creator's permanent id instead of their real name", async () => {
+      // Not-yet-verified creators (like user-2 here) are excluded at the
+      // query's where clause in real usage — this mock doesn't enforce
+      // that, so this also doubles as coverage that the mapping itself
+      // never falls back to a real name for a creator that does have an id.
       prisma.campaignParticipation.findMany.mockResolvedValue([
         {
           creatorId: "user-1",
@@ -585,7 +589,7 @@ describe("ParticipationService", () => {
       const result = await service.getOverallLeaderboard("user-1");
 
       expect(result.entries.find((e) => e.creatorId === "user-1")?.displayName).toBe(
-        "Creator #482910384",
+        "#482910384",
       );
       expect(result.entries.find((e) => e.creatorId === "user-2")?.displayName).toBe(
         "Priya Singh",

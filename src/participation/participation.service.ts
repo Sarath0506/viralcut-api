@@ -1113,7 +1113,7 @@ export class ParticipationService {
         displayName:
           p.creatorProfile.label ??
           (p.creator.verifiedCreatorId
-            ? `Creator #${p.creator.verifiedCreatorId}`
+            ? `#${p.creator.verifiedCreatorId}`
             : (p.creator.displayName ?? p.creator.username ?? "Creator")),
         handle: p.creatorProfile.handle,
         platform: p.creatorProfile.platform,
@@ -1141,9 +1141,12 @@ export class ParticipationService {
     // Excludes soft-deleted creators (isActive: false) — their displayName
     // is scrubbed to "deleted_<id>" on deletion (see UsersService.deleteMe),
     // and without this filter that placeholder name shows up ranked
-    // alongside real, active creators.
+    // alongside real, active creators. Also excludes not-yet-verified
+    // creators entirely — this overall leaderboard is public-facing across
+    // every campaign, and an unverified creator has no anonymous id to show
+    // in place of their real name here.
     const participations = await this.prisma.campaignParticipation.findMany({
-      where: { creator: { isActive: true } },
+      where: { creator: { isActive: true, verifiedCreatorId: { not: null } } },
       include: {
         creator: {
           select: { id: true, displayName: true, username: true, avatarUrl: true, verifiedCreatorId: true },
@@ -1185,13 +1188,11 @@ export class ParticipationService {
       } else {
         byCreator.set(p.creatorId, {
           creatorId: p.creator.id,
-          // Verified creators show their permanent public ID instead of
-          // their real name — real name + real earnings, both publicly
-          // visible to every other creator on this same leaderboard, was
-          // the actual problem this solves. Not-yet-verified creators
-          // still show their real name for now.
+          // Every creator reaching this point is verified (see the query's
+          // where clause above) and so always has a verifiedCreatorId — the
+          // real-name fallback here is defensive, not an expected path.
           displayName: p.creator.verifiedCreatorId
-            ? `Creator #${p.creator.verifiedCreatorId}`
+            ? `#${p.creator.verifiedCreatorId}`
             : (p.creator.displayName ?? p.creator.username ?? "Creator"),
           avatarUrl: p.creator.avatarUrl,
           totalViews,
