@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import {
@@ -19,6 +20,7 @@ import {
 import { ActivityLogService } from "../activity/activity-log.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { getCampaignPoolUsageMap } from "../common/campaign-pool";
+import { InAppNotificationService } from "../notifications/in-app-notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeService } from "../realtime/realtime.service";
 import {
@@ -30,12 +32,47 @@ import type { ListCampaignsQueryDto } from "./dto/list-campaigns-query.dto";
 
 @Injectable()
 export class CampaignsService {
+  private readonly logger = new Logger(CampaignsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly campaignAccess: CampaignAccessService,
     private readonly realtime: RealtimeService,
     private readonly activityLog: ActivityLogService,
+    private readonly notifications: InAppNotificationService,
   ) {}
+
+  // Fire-and-forget on purpose — a brand/admin publishing a campaign
+  // shouldn't wait on N sequential push+WhatsApp sends before getting their
+  // response. Failures are logged per-creator so one bad phone/token never
+  // stops the rest of the batch.
+  private notifyCreatorsOfNewCampaign(campaign: { id: string; title: string }): void {
+    this.prisma.user
+      .findMany({
+        where: { role: UserRole.creator, isActive: true },
+        select: { id: true },
+      })
+      .then(async (creators) => {
+        for (const creator of creators) {
+          try {
+            await this.notifications.create(creator.id, "creator", {
+              type: "campaign_live",
+              title: "New campaign live 🎉",
+              body: `${campaign.title} just went live — check it out and start creating.`,
+              link: `/campaigns/${campaign.id}`,
+              sendWhatsapp: true,
+            });
+          } catch (err) {
+            this.logger.warn(
+              `Failed to notify creator ${creator.id} of new campaign ${campaign.id}: ${err}`,
+            );
+          }
+        }
+      })
+      .catch((err) => {
+        this.logger.warn(`Failed to load creators to notify for campaign ${campaign.id}: ${err}`);
+      });
+  }
 
   // Use COALESCE(paid_amount_paise, estimated) so paid takes priority once processed;
   // fall back to view-count-derived estimate for campaigns with no payouts yet.
@@ -267,6 +304,7 @@ export class CampaignsService {
     });
     if (isLive) {
       this.realtime.emitCampaignPublished(formatted);
+      this.notifyCreatorsOfNewCampaign(formatted);
     } else {
       this.realtime.emitCampaignCreated(formatted);
     }
@@ -380,6 +418,7 @@ export class CampaignsService {
       existing.status !== CampaignStatus.live
     ) {
       this.realtime.emitCampaignPublished(formatted);
+      this.notifyCreatorsOfNewCampaign(formatted);
     } else {
       this.realtime.emitCampaignUpdated(formatted);
     }

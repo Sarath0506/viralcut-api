@@ -218,3 +218,116 @@ describe("InstagramOAuthService.getMediaInsightsForPost", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("InstagramOAuthService.getOwnLivePostMedia", () => {
+  let prisma: ReturnType<typeof makePrisma>;
+  let service: InstagramOAuthService;
+
+  beforeEach(() => {
+    prisma = makePrisma();
+    service = new InstagramOAuthService(prisma as never, {} as never, makeConfig() as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function connectedRow(overrides: Record<string, unknown> = {}) {
+    const encryptedAccessToken = (service as unknown as { encrypt(v: string): string }).encrypt("real-token");
+    return {
+      creatorProfileId: "profile-1",
+      platformUserId: "ig-user-1",
+      isConnected: true,
+      encryptedAccessToken,
+      tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      ...overrides,
+    };
+  }
+
+  it("returns the real media_url for a matched video post", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      makeResponse({
+        data: [
+          {
+            id: "media-42",
+            permalink: "https://www.instagram.com/reel/Cxyz123/",
+            media_type: "VIDEO",
+            media_url: "https://real-cdn.example.com/video.mp4",
+            thumbnail_url: "https://real-cdn.example.com/thumb.jpg",
+          },
+        ],
+      }),
+    );
+
+    const result = await service.getOwnLivePostMedia("profile-1", "https://www.instagram.com/reel/Cxyz123/");
+
+    expect(result).toEqual({ kind: "video", url: "https://real-cdn.example.com/video.mp4" });
+  });
+
+  it("returns the image media_url for a non-video post", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      makeResponse({
+        data: [
+          {
+            id: "media-42",
+            permalink: "https://www.instagram.com/p/Cxyz123/",
+            media_type: "IMAGE",
+            media_url: "https://real-cdn.example.com/photo.jpg",
+          },
+        ],
+      }),
+    );
+
+    const result = await service.getOwnLivePostMedia("profile-1", "https://www.instagram.com/p/Cxyz123/");
+
+    expect(result).toEqual({ kind: "image", url: "https://real-cdn.example.com/photo.jpg" });
+  });
+
+  it("falls back to thumbnail_url when there's no direct media_url", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      makeResponse({
+        data: [
+          {
+            id: "media-42",
+            permalink: "https://www.instagram.com/reel/Cxyz123/",
+            media_type: "VIDEO",
+            thumbnail_url: "https://real-cdn.example.com/thumb.jpg",
+          },
+        ],
+      }),
+    );
+
+    const result = await service.getOwnLivePostMedia("profile-1", "https://www.instagram.com/reel/Cxyz123/");
+
+    expect(result).toEqual({ kind: "image", url: "https://real-cdn.example.com/thumb.jpg" });
+  });
+
+  it("returns null when the post isn't found on the connected account", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(makeResponse({ data: [] }));
+
+    const result = await service.getOwnLivePostMedia("profile-1", "https://www.instagram.com/reel/NotThere/");
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null (never throws) when the Graph API call fails", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(connectedRow());
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+
+    const result = await service.getOwnLivePostMedia("profile-1", "https://www.instagram.com/reel/Cxyz123/");
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when there's no connected account at all", async () => {
+    prisma.instagramConnection.findUnique.mockResolvedValue(null);
+
+    const result = await service.getOwnLivePostMedia("profile-1", "https://www.instagram.com/reel/Cxyz123/");
+
+    expect(result).toBeNull();
+  });
+});
