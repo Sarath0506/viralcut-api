@@ -6,6 +6,7 @@ import { ActivityLogService } from "../activity/activity-log.service";
 import { getCampaignPoolUsage } from "../common/campaign-pool";
 import { computeEstimatedPaise } from "../common/earnings";
 import { computeMarketplaceSplitPaise } from "../common/marketplace-split";
+import { ensureVerifiedCreatorId } from "../common/verified-creator-id";
 import { PrismaService } from "../prisma/prisma.service";
 import { AdminRolesService } from "../admin-roles/admin-roles.service";
 import { CampaignsService } from "../campaigns/campaigns.service";
@@ -607,6 +608,7 @@ export class AdminService {
       email: c.email,
       phone: c.phone,
       avatarUrl: c.avatarUrl,
+      verifiedCreatorId: c.verifiedCreatorId,
       kycStatus: c.kycStatus,
       isActive: c.isActive,
       createdAt: c.createdAt.toISOString(),
@@ -696,6 +698,7 @@ export class AdminService {
       avatarUrl: creator.avatarUrl,
       bio: creator.bio,
       socialLinks: (creator.socialLinks as Record<string, string> | null) ?? null,
+      verifiedCreatorId: creator.verifiedCreatorId,
       kycStatus: creator.kycStatus,
       kycDocumentUrl: creator.kycDocumentUrl,
       kycDocumentType: creator.kycDocumentType,
@@ -847,6 +850,13 @@ export class AdminService {
       },
     });
 
+    // Assigned once, the first time a creator is verified — shown on
+    // leaderboards instead of their real name from then on. A no-op if
+    // they already have one (e.g. a later reconnect-and-reverify).
+    if (action === "approve") {
+      await ensureVerifiedCreatorId(this.prisma, creatorId);
+    }
+
     await this.notifications.create(creatorId, "creator", {
       type: action === "approve" ? "instagram_review_verified" : "instagram_review_rejected",
       title: action === "approve" ? "Instagram verified ✅" : "Instagram review needs attention",
@@ -855,6 +865,7 @@ export class AdminService {
           ? "Your Instagram account has been verified."
           : `Your Instagram verification was rejected: ${reason!.trim()}`,
       link: "/verification",
+      sendWhatsapp: true,
     });
     this.realtime.emitOnboardingVerificationUpdated(creatorId);
 

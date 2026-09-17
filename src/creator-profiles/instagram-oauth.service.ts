@@ -72,6 +72,7 @@ type InstagramMediaItem = {
 
 type InstagramMediaResponse = {
   data?: InstagramMediaItem[];
+  paging?: { next?: string };
   error?: InstagramGraphError;
 };
 
@@ -651,16 +652,24 @@ export class InstagramOAuthService {
       const accessToken = await this.getValidAccessToken(creatorProfileId);
       const token = encodeURIComponent(accessToken);
 
-      // Only the account's own most-recent media is searched — same
-      // 25-item window fetchProfileAndMedia uses. A post that's fallen out
-      // of that window (many newer posts since) won't be found here and
-      // falls back to Apify, same as a post from an unconnected account.
-      const mediaRes = await this.instagramGraphFetch<InstagramMediaResponse>(
-        `${this.graphBase}/${encodeURIComponent(connection.platformUserId)}/media?fields=id,permalink&limit=25&access_token=${token}`,
-      );
-      const match = (mediaRes.data ?? []).find(
-        (m) => m.permalink && extractInstagramShortcode(m.permalink) === targetShortcode,
-      );
+      // Search the account's own media for a permalink matching this post's
+      // shortcode. Instagram-only by design — no Apify fallback — so a post
+      // simply not being on the first page isn't good enough reason to give
+      // up: page further back (100/page, the max this edge allows) until we
+      // find it or hit a hard cap on how far we'll look.
+      const maxPages = 5; // up to ~500 most recent posts
+      let nextUrl: string | undefined =
+        `${this.graphBase}/${encodeURIComponent(connection.platformUserId)}/media?fields=id,permalink&limit=100&access_token=${token}`;
+      let match: InstagramMediaItem | undefined;
+      for (let page = 0; page < maxPages && nextUrl; page++) {
+        const mediaRes: InstagramMediaResponse =
+          await this.instagramGraphFetch<InstagramMediaResponse>(nextUrl);
+        match = (mediaRes.data ?? []).find(
+          (m) => m.permalink && extractInstagramShortcode(m.permalink) === targetShortcode,
+        );
+        if (match) break;
+        nextUrl = mediaRes.paging?.next;
+      }
       if (!match) {
         this.logger.warn(`No Instagram media match for ${livePostUrl} in profile ${creatorProfileId}'s recent posts`);
         return null;

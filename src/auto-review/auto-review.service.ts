@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Cron, CronExpression } from "@nestjs/schedule";
 import { FormatDeliverableStatus, SourceAssetRequirement } from "@prisma/client";
 
 import { ApifyService } from "../common/apify.service";
@@ -156,6 +157,108 @@ export class AutoReviewService {
       }
     } catch (err) {
       this.logger.error(`Draft auto-review failed for deliverable ${deliverableId}: ${err}`);
+    }
+  }
+
+  /** submitDraft/submitLiveProof trigger the pipeline once, fire-and-forget,
+   * at the exact moment of submission — if AUTO_REVIEW_ENABLED was off at
+   * that instant (or the process crashed mid-run), that submission is never
+   * retried; nothing else ever revisits it. Confirmed live: two real
+   * submissions made while the flag was off got permanently skipped, with
+   * no trace beyond a debug log line, until manually re-triggered.
+   *
+   * This sweep is the backfill, covering two distinct gaps:
+   *  1. Zero AutoReviewResult rows at all — never evaluated once (the flag
+   *     was off, or the process crashed mid-run).
+   *  2. Exactly one result, decision needs_review, tier2Results null, and
+   *     every Tier 1 gate actually resolved (not "unresolved") — this
+   *     specific shape means getOrCreateChecklist's Gemini call came back
+   *     empty that one time (confirmed live: a transient API hiccup, not a
+   *     content problem — the identical brief succeeded on immediate
+   *     retry) rather than a genuine "can't check this" case like an
+   *     un-fetchable Drive link (which shows up as an unresolved Tier 1
+   *     gate instead, and retrying that wouldn't help).
+   * A resubmission is a different case in both — submitDraft/submitLiveProof
+   * re-trigger the pipeline directly for that. Both gaps are merged into one
+   * first-submitted-first-served queue, oldest first, same as a human
+   * reviewer's queue would be. Bounded per run so a large backlog can't burn
+   * through the Gemini/Apify rate limit in one pass — the remainder just
+   * waits for the next cycle. */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async catchUpMissedAutoReviews(): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      const maxPerRun = 10;
+      const reviewableStatuses = [
+        FormatDeliverableStatus.under_review,
+        FormatDeliverableStatus.live_submitted,
+        FormatDeliverableStatus.proof_under_review,
+      ];
+
+      const [draftBacklog, proofBacklog, stuckCandidates] = await Promise.all([
+        this.prisma.formatDeliverable.findMany({
+          where: { status: FormatDeliverableStatus.under_review, autoReviewResults: { none: {} } },
+          orderBy: { draftSubmittedAt: "asc" },
+          take: maxPerRun,
+          select: { id: true, draftSubmittedAt: true },
+        }),
+        this.prisma.formatDeliverable.findMany({
+          where: {
+            status: { in: [FormatDeliverableStatus.live_submitted, FormatDeliverableStatus.proof_under_review] },
+            autoReviewResults: { none: {} },
+          },
+          orderBy: { liveSubmittedAt: "asc" },
+          take: maxPerRun,
+          select: { id: true, liveSubmittedAt: true },
+        }),
+        this.prisma.formatDeliverable.findMany({
+          where: { status: { in: reviewableStatuses }, autoReviewResults: { some: {} } },
+          include: { autoReviewResults: { orderBy: { createdAt: "desc" }, take: 1 } },
+          take: 50, // bounds the scan itself, not the retry count after filtering
+        }),
+      ]);
+
+      const stuckQueue = stuckCandidates
+        .filter((d) => {
+          const latest = d.autoReviewResults[0];
+          if (!latest || latest.decision !== "needs_review" || latest.tier2Results !== null) return false;
+          const tier1 = latest.tier1Results as GateResult[] | null;
+          // Only retry when every Tier 1 gate actually resolved (the draft
+          // itself was fetchable) — an unresolved gate means the pipeline
+          // genuinely can't check this yet, and retrying won't change that.
+          return Array.isArray(tier1) && tier1.every((g) => g.status !== "unresolved");
+        })
+        .map((d) => ({
+          id: d.id,
+          stage: (d.status === FormatDeliverableStatus.under_review ? "draft" : "proof") as "draft" | "proof",
+          submittedAt: d.status === FormatDeliverableStatus.under_review ? d.draftSubmittedAt! : d.liveSubmittedAt!,
+        }));
+
+      // Merge all three sources into one first-submitted-first-served order,
+      // capped at maxPerRun total so one sweep can't overrun the rate limit.
+      const queue = [
+        ...draftBacklog.map((d) => ({ id: d.id, stage: "draft" as const, submittedAt: d.draftSubmittedAt! })),
+        ...proofBacklog.map((d) => ({ id: d.id, stage: "proof" as const, submittedAt: d.liveSubmittedAt! })),
+        ...stuckQueue,
+      ]
+        .sort((a, b) => a.submittedAt.getTime() - b.submittedAt.getTime())
+        .slice(0, maxPerRun);
+
+      if (queue.length === 0) return;
+
+      this.logger.log(`catchUpMissedAutoReviews: processing ${queue.length} deliverable(s)`);
+      for (const item of queue) {
+        if (item.stage === "draft") {
+          await this.runDraftPipeline(item.id);
+        } else {
+          await this.runProofPipeline(item.id);
+        }
+        // Same courtesy pause the metrics sweep uses — this is an unattended
+        // background catch-up, not a human waiting on a response.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } catch (err) {
+      this.logger.error(`catchUpMissedAutoReviews failed: ${err}`);
     }
   }
 

@@ -5,6 +5,7 @@ import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { PushNotificationService } from "./push-notification.service";
+import { WhatsappService } from "./whatsapp.service";
 
 type CreateNotificationInput = {
   type: string;
@@ -12,6 +13,11 @@ type CreateNotificationInput = {
   body?: string;
   link?: string;
   metadata?: Prisma.InputJsonValue;
+  // Opt-in, not the default — WhatsApp template messages cost money per
+  // send, so this only fires for the handful of moments a creator actually
+  // needs to know about right away (see the call sites that set it), not
+  // every notification.create() call in the app.
+  sendWhatsapp?: boolean;
 };
 
 function formatNotification(n: {
@@ -42,6 +48,7 @@ export class InAppNotificationService {
     private readonly prisma: PrismaService,
     private readonly gateway: RealtimeGateway,
     private readonly push: PushNotificationService,
+    private readonly whatsapp: WhatsappService,
   ) {}
 
   async create(
@@ -78,6 +85,25 @@ export class InAppNotificationService {
         body: input.body,
         data: input.link ? { link: input.link } : undefined,
       });
+
+      if (input.sendWhatsapp && role === "creator" && this.whatsapp.isGeneralTemplateConfigured()) {
+        const recipient = await this.prisma.user.findUnique({
+          where: { id: recipientUserId },
+          select: { phone: true, displayName: true, username: true },
+        });
+        if (recipient?.phone) {
+          try {
+            await this.whatsapp.sendGeneralUpdate(recipient.phone, {
+              recipientName: recipient.displayName ?? recipient.username ?? "there",
+              title: input.title,
+              message: input.body ?? input.title,
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger.error(`WhatsApp send failed for notification "${input.type}" to ${recipientUserId}: ${message}`);
+          }
+        }
+      }
     } catch (error) {
       // Notifications must never break the action that triggered them.
       this.logger.error(`Failed to create notification "${input.type}" for ${recipientUserId}`, error as Error);

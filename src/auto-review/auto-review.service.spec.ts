@@ -11,7 +11,7 @@ vi.spyOn(videoCompress, "compressVideoForGemini").mockImplementation(async (buff
 
 function makePrisma() {
   const prisma = {
-    formatDeliverable: { findUnique: vi.fn(), update: vi.fn() },
+    formatDeliverable: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn() },
     instagramConnection: { findUnique: vi.fn() },
     youtubeConnection: { findUnique: vi.fn() },
     autoReviewResult: { create: vi.fn() },
@@ -834,6 +834,133 @@ describe("AutoReviewService", () => {
       await service.runProofPipeline("deliverable-1");
 
       expect(prisma.formatDeliverable.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("catchUpMissedAutoReviews", () => {
+    it("does nothing at all when AUTO_REVIEW_ENABLED is false — not even the backlog lookup", async () => {
+      build(false);
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findMany).not.toHaveBeenCalled();
+    });
+
+    it("does nothing when there's no backlog", async () => {
+      prisma.formatDeliverable.findMany.mockResolvedValue([]);
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("processes never-evaluated drafts and proofs together in first-submitted-first-served order", async () => {
+      // Two draft-stage and one proof-stage deliverable, deliberately
+      // returned out of chronological order by each individual query (as
+      // real Prisma results could be) — the merge step must still process
+      // them oldest-submitted-first across both stages combined.
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (where.autoReviewResults?.some) return Promise.resolve([]); // no stuck candidates in this test
+        if (where.status === "under_review") {
+          return Promise.resolve([
+            { id: "draft-newer", draftSubmittedAt: new Date("2026-01-01T12:00:00Z") },
+            { id: "draft-oldest", draftSubmittedAt: new Date("2026-01-01T08:00:00Z") },
+          ]);
+        }
+        return Promise.resolve([
+          { id: "proof-middle", liveSubmittedAt: new Date("2026-01-01T10:00:00Z") },
+        ]);
+      });
+      // Each pipeline call re-fetches the deliverable itself — short-circuit
+      // via "no live URL"/"no draft" so this test only has to verify which
+      // deliverables get looked up, and in what order, not the full
+      // evaluation path (already covered by the other describe blocks).
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, livePostUrl: null, draftDriveUrl: null });
+
+      await service.catchUpMissedAutoReviews();
+
+      const lookedUpIds = prisma.formatDeliverable.findUnique.mock.calls.map(
+        (call: any) => call[0].where.id,
+      );
+      expect(lookedUpIds).toEqual(["draft-oldest", "proof-middle", "draft-newer"]);
+    });
+
+    it(
+      "caps how many it processes in one run instead of unloading the whole backlog at once",
+      async () => {
+        const manyDrafts = Array.from({ length: 15 }, (_, i) => ({
+          id: `draft-${i}`,
+          draftSubmittedAt: new Date(2026, 0, 1, 0, i),
+        }));
+        prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) =>
+          Promise.resolve(where.status === "under_review" ? manyDrafts : []),
+        );
+        prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, draftDriveUrl: null });
+
+        await service.catchUpMissedAutoReviews();
+
+        expect(prisma.formatDeliverable.findUnique.mock.calls.length).toBeLessThanOrEqual(10);
+      },
+      10_000, // 10 items × the sweep's own 500ms courtesy pause between each
+    );
+
+    it("retries a deliverable stuck on needs_review with no Tier 2 check — a transient checklist failure", async () => {
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]); // no backlog in this test
+        return Promise.resolve([
+          {
+            id: "stuck-checklist-failure",
+            status: "under_review",
+            draftSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            liveSubmittedAt: null,
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                // format_match resolved fine (the draft WAS fetchable) — the
+                // only reason tier2Results is null is the checklist call
+                // itself failing, which is exactly the transient case worth
+                // retrying.
+                tier1Results: [{ gate: "format_match", status: "pass", reason: "Vertical video" }],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, draftDriveUrl: null });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "stuck-checklist-failure" } }),
+      );
+    });
+
+    it("does not retry a deliverable whose needs_review is a genuine unresolved gate (e.g. an un-fetchable Drive link)", async () => {
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "genuinely-unresolved",
+            status: "under_review",
+            draftSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            liveSubmittedAt: null,
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                tier1Results: [
+                  { gate: "format_match", status: "unresolved", reason: "Draft is not an app-uploaded file" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
     });
   });
 });

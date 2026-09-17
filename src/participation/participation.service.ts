@@ -783,6 +783,7 @@ export class ParticipationService {
       where: { id: deliverableId },
       include: {
         rejectionEvents: rejectionEventsInclude,
+        autoReviewResults: { orderBy: { createdAt: "desc" } },
         participation: {
           include: {
             campaign: true,
@@ -863,6 +864,20 @@ export class ParticipationService {
         draftDriveUrl: s.draftDriveUrl,
         rejectionReason: s.rejectionReason,
       })),
+      // Shadow-mode auto-review history — most recent first, one row per
+      // pipeline run (draft submit, proof submit, or a resubmit of either).
+      // Purely informational: never drives status, only what a human sees
+      // alongside their own review. Empty when AUTO_REVIEW_ENABLED is off,
+      // or before the first submission's pipeline run has finished.
+      autoReview: deliverable.autoReviewResults.map((r) => ({
+        id: r.id,
+        stage: r.stage,
+        decision: r.decision,
+        tier1Results: r.tier1Results,
+        tier2Results: r.tier2Results,
+        modelVersion: r.modelVersion,
+        createdAt: r.createdAt.toISOString(),
+      })),
     };
   }
 
@@ -925,6 +940,7 @@ export class ParticipationService {
         title: "Draft approved 🎉",
         body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} was approved. Post it live and submit the link to get paid.`,
         link: `/participations/${deliverable.participation.id}`,
+        sendWhatsapp: true,
       });
       return { id: updated.id, status: updated.status };
     }
@@ -993,6 +1009,7 @@ export class ParticipationService {
       title: "Draft needs changes",
       body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes: ${trimmedReason}`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
     return { id: updated.id, status: updated.status };
   }
@@ -1069,7 +1086,7 @@ export class ParticipationService {
       where: { campaignId, creator: { isActive: true } },
       include: {
         creator: {
-          select: { id: true, displayName: true, username: true, avatarUrl: true },
+          select: { id: true, displayName: true, username: true, avatarUrl: true, verifiedCreatorId: true },
         },
         creatorProfile: {
           select: { id: true, platform: true, handle: true, label: true },
@@ -1092,11 +1109,14 @@ export class ParticipationService {
       return {
         creatorId: p.creator.id,
         creatorProfileId: p.creatorProfile.id,
+        // Same real-name-exposure fix as getOverallLeaderboard — see there
+        // for why. p.creatorProfile.label is a brand-facing nickname, not
+        // relevant to this concern, so it still wins when set.
         displayName:
           p.creatorProfile.label ??
-          p.creator.displayName ??
-          p.creator.username ??
-          "Creator",
+          (p.creator.verifiedCreatorId
+            ? `#${p.creator.verifiedCreatorId}`
+            : (p.creator.displayName ?? p.creator.username ?? "Creator")),
         handle: p.creatorProfile.handle,
         platform: p.creatorProfile.platform,
         avatarUrl: p.creator.avatarUrl,
@@ -1123,12 +1143,15 @@ export class ParticipationService {
     // Excludes soft-deleted creators (isActive: false) — their displayName
     // is scrubbed to "deleted_<id>" on deletion (see UsersService.deleteMe),
     // and without this filter that placeholder name shows up ranked
-    // alongside real, active creators.
+    // alongside real, active creators. Also excludes not-yet-verified
+    // creators entirely — this overall leaderboard is public-facing across
+    // every campaign, and an unverified creator has no anonymous id to show
+    // in place of their real name here.
     const participations = await this.prisma.campaignParticipation.findMany({
-      where: { creator: { isActive: true } },
+      where: { creator: { isActive: true, verifiedCreatorId: { not: null } } },
       include: {
         creator: {
-          select: { id: true, displayName: true, username: true, avatarUrl: true },
+          select: { id: true, displayName: true, username: true, avatarUrl: true, verifiedCreatorId: true },
         },
         campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
         deliverables: { select: { viewCount: true, paidAmountPaise: true } },
@@ -1167,7 +1190,12 @@ export class ParticipationService {
       } else {
         byCreator.set(p.creatorId, {
           creatorId: p.creator.id,
-          displayName: p.creator.displayName ?? p.creator.username ?? "Creator",
+          // Every creator reaching this point is verified (see the query's
+          // where clause above) and so always has a verifiedCreatorId — the
+          // real-name fallback here is defensive, not an expected path.
+          displayName: p.creator.verifiedCreatorId
+            ? `#${p.creator.verifiedCreatorId}`
+            : (p.creator.displayName ?? p.creator.username ?? "Creator"),
           avatarUrl: p.creator.avatarUrl,
           totalViews,
           totalEarnedPaise,
@@ -1238,6 +1266,7 @@ export class ParticipationService {
       title: "Proof approved — payout on the way",
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was verified. Payout will be processed shortly.`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
 
     return { id: updated.id, status: updated.status };
@@ -1284,6 +1313,7 @@ export class ParticipationService {
       title: "Proof rejected",
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected: ${reason}`,
       link: `/participations/${deliverable.participation.id}`,
+      sendWhatsapp: true,
     });
 
     return { id: updated.id, status: updated.status };
