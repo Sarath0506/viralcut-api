@@ -171,7 +171,7 @@ export class AutoReviewService {
    * submissions made while the flag was off got permanently skipped, with
    * no trace beyond a debug log line, until manually re-triggered.
    *
-   * This sweep is the backfill, covering four distinct gaps:
+   * This sweep is the backfill, covering five distinct gaps:
    *  1. Zero AutoReviewResult rows at all — never evaluated once (the flag
    *     was off, or the process crashed mid-run).
    *  2. Exactly one result, decision needs_review, tier2Results null, and
@@ -197,8 +197,19 @@ export class AutoReviewService {
    *     draft_live_match together for one real submission — outside what
    *     gap #3's single-gate rule would ever retry, even after the
    *     HikerAPI dependency was removed.
-   * A resubmission is a different case in all four — submitDraft/submitLiveProof
-   * re-trigger the pipeline directly for that. All four gaps are merged into one
+   *  5. Enforcement-only: decision is already auto_approved/auto_rejected
+   *     (not needs_review — gaps 1-4 don't apply) and the deliverable is
+   *     still sitting in a reviewable status, meaning the decision was
+   *     computed while AUTO_REVIEW_ENFORCE_ENABLED was off and never
+   *     applied. Confirmed live: enabling enforcement doesn't retroactively
+   *     touch anything decided beforehand — every other gap here only ever
+   *     looks for needs_review, so a confident decision reads as "nothing
+   *     left to do" everywhere else. Applies the already-computed outcome
+   *     directly instead of re-evaluating, since the point is enforcing
+   *     the answer already reached, not risking a second, possibly
+   *     different verdict for something already decided.
+   * A resubmission is a different case in all five — submitDraft/submitLiveProof
+   * re-trigger the pipeline directly for that. All five gaps are merged into one
    * first-submitted-first-served queue, oldest first, same as a human
    * reviewer's queue would be. Bounded per run so a large backlog can't burn
    * through the Gemini/Apify rate limit in one pass — the remainder just
@@ -294,14 +305,51 @@ export class AutoReviewService {
           id: d.id,
           stage: (d.status === FormatDeliverableStatus.under_review ? "draft" : "proof") as "draft" | "proof",
           submittedAt: d.status === FormatDeliverableStatus.under_review ? d.draftSubmittedAt! : d.liveSubmittedAt!,
+          outcome: undefined as AutoReviewOutcome | undefined,
         }));
 
-      // Merge all three sources into one first-submitted-first-served order,
+      // Gap #5, enforcement-only: a confident auto_approved/auto_rejected
+      // decision that was computed while AUTO_REVIEW_ENFORCE_ENABLED was
+      // off (shadow mode) and never got applied — the deliverable is still
+      // sitting in a reviewable status with a real decision already on
+      // file. Confirmed live: turning enforcement on doesn't retroactively
+      // touch anything decided before that moment, since this sweep's
+      // other gaps only ever look for needs_review — a decided outcome
+      // reads as "nothing left to do" everywhere else. Applies the
+      // already-computed outcome directly (applyDraftDecision/
+      // applyProofDecision, which safely no-op if a human already acted
+      // since) rather than re-evaluating — the point is to enforce the
+      // answer already reached, not risk a second, possibly different
+      // verdict for something already decided.
+      const unenforcedDecidedQueue = this.enforceEnabled
+        ? stuckCandidates
+            .filter((d) => {
+              const latest = d.autoReviewResults[0];
+              return latest?.decision === "auto_approved" || latest?.decision === "auto_rejected";
+            })
+            .map((d) => {
+              const latest = d.autoReviewResults[0];
+              return {
+                id: d.id,
+                stage: (d.status === FormatDeliverableStatus.under_review ? "draft" : "proof") as "draft" | "proof",
+                submittedAt: d.status === FormatDeliverableStatus.under_review ? d.draftSubmittedAt! : d.liveSubmittedAt!,
+                outcome: {
+                  decision: latest.decision,
+                  tier1Results: latest.tier1Results as GateResult[],
+                  tier2Results: latest.tier2Results as CriterionResult[] | null,
+                  modelVersion: latest.modelVersion,
+                } as AutoReviewOutcome,
+              };
+            })
+        : [];
+
+      // Merge all sources into one first-submitted-first-served order,
       // capped at maxPerRun total so one sweep can't overrun the rate limit.
       const queue = [
-        ...draftBacklog.map((d) => ({ id: d.id, stage: "draft" as const, submittedAt: d.draftSubmittedAt! })),
-        ...proofBacklog.map((d) => ({ id: d.id, stage: "proof" as const, submittedAt: d.liveSubmittedAt! })),
+        ...draftBacklog.map((d) => ({ id: d.id, stage: "draft" as const, submittedAt: d.draftSubmittedAt!, outcome: undefined as AutoReviewOutcome | undefined })),
+        ...proofBacklog.map((d) => ({ id: d.id, stage: "proof" as const, submittedAt: d.liveSubmittedAt!, outcome: undefined as AutoReviewOutcome | undefined })),
         ...stuckQueue,
+        ...unenforcedDecidedQueue,
       ]
         .sort((a, b) => a.submittedAt.getTime() - b.submittedAt.getTime())
         .slice(0, maxPerRun);
@@ -310,7 +358,13 @@ export class AutoReviewService {
 
       this.logger.log(`catchUpMissedAutoReviews: processing ${queue.length} deliverable(s)`);
       for (const item of queue) {
-        if (item.stage === "draft") {
+        if (item.outcome) {
+          if (item.stage === "draft") {
+            await this.applyDraftDecision(item.id, item.outcome);
+          } else {
+            await this.applyProofDecision(item.id, item.outcome);
+          }
+        } else if (item.stage === "draft") {
           await this.runDraftPipeline(item.id);
         } else {
           await this.runProofPipeline(item.id);

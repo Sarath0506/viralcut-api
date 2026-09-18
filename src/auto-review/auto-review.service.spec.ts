@@ -1257,5 +1257,113 @@ describe("AutoReviewService", () => {
 
       expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
     });
+
+    it("applies an already-decided auto_rejected outcome when enforcement is on, instead of re-evaluating", async () => {
+      // Confirmed live: "one piece" reached a confident auto_rejected
+      // decision in shadow mode, then AUTO_REVIEW_ENFORCE_ENABLED was
+      // turned on a few minutes later — nothing retroactively applies a
+      // decision made before that flip, since every other gap here only
+      // ever looks for needs_review.
+      build(true, true);
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "decided-but-unenforced",
+            status: "proof_under_review",
+            livePostUrl: "https://www.instagram.com/reel/abc123/",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            autoReviewResults: [
+              {
+                decision: "auto_rejected",
+                modelVersion: "gemini-2.5-flash",
+                tier2Results: [
+                  { criterionId: "c1", label: "x", pass: true, confidence: 1, reason: "ok", required: true },
+                ],
+                tier1Results: [
+                  { gate: "resolves_and_public", status: "pass", reason: "resolved" },
+                  { gate: "platform_match", status: "pass", reason: "matches" },
+                  { gate: "ownership_verified", status: "pass", reason: "matches" },
+                  {
+                    gate: "draft_live_match",
+                    status: "fail",
+                    reason: "Your live post doesn't match your approved draft — double-check the link and resubmit. (different clip)",
+                  },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        id: "decided-but-unenforced",
+        status: "proof_under_review",
+        platform: "instagram_reel",
+        participation: {
+          id: "participation-1",
+          creatorId: "creator-1",
+          campaignId: "campaign-1",
+          campaign: { title: "Test Campaign", brandProfileId: "brand-1" },
+        },
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({ status: "proof_rejected", platform: "instagram_reel" });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "decided-but-unenforced" },
+          data: expect.objectContaining({
+            status: "proof_rejected",
+            rejectionReason: expect.stringContaining("resubmit"),
+          }),
+        }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        "creator-1",
+        "creator",
+        expect.objectContaining({ type: "proof_rejected" }),
+      );
+      // Applies the stored decision directly — never re-fetches the live
+      // post or re-runs the comparison, and never writes a second
+      // AutoReviewResult row for the same decision.
+      expect(instagramOAuth.getOwnLivePostMedia).not.toHaveBeenCalled();
+      expect(prisma.autoReviewResult.create).not.toHaveBeenCalled();
+    });
+
+    it("never applies an already-decided outcome when enforcement is off", async () => {
+      // build() defaults to enforceEnabled: false.
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "decided-shadow-mode",
+            status: "proof_under_review",
+            livePostUrl: "https://www.instagram.com/reel/abc123/",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            autoReviewResults: [
+              {
+                decision: "auto_rejected",
+                modelVersion: "gemini-2.5-flash",
+                tier2Results: null,
+                tier1Results: [
+                  { gate: "resolves_and_public", status: "pass", reason: "resolved" },
+                  { gate: "platform_match", status: "pass", reason: "matches" },
+                  { gate: "ownership_verified", status: "pass", reason: "matches" },
+                  { gate: "draft_live_match", status: "fail", reason: "doesn't match" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
+      expect(prisma.formatDeliverable.update).not.toHaveBeenCalled();
+    });
   });
 });
