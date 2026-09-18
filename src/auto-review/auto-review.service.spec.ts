@@ -1102,13 +1102,53 @@ describe("AutoReviewService", () => {
       );
     });
 
-    it("does not retry a stuck draft_live_match when ownership itself is still unresolved", async () => {
+    it("retries an Instagram proof when both ownership_verified and draft_live_match are unresolved together", async () => {
+      // Neither gate touches HikerAPI for Instagram anymore — a shared
+      // failure across just these two (and/or resolves_and_public) is the
+      // exact shape a HikerAPI outage produced live, and none of them are
+      // structural once the whole check is first-party.
       prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
         if (!where.autoReviewResults?.some) return Promise.resolve([]);
         return Promise.resolve([
           {
-            id: "unverified-ownership",
+            id: "instagram-double-unresolved",
             status: "proof_under_review",
+            livePostUrl: "https://www.instagram.com/reel/abc123/",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                tier1Results: [
+                  { gate: "resolves_and_public", status: "pass", reason: "resolved" },
+                  { gate: "platform_match", status: "pass", reason: "matches" },
+                  { gate: "ownership_verified", status: "unresolved", reason: "needs a human to check" },
+                  { gate: "draft_live_match", status: "unresolved", reason: "Could not compare draft and live content" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, livePostUrl: null });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "instagram-double-unresolved" } }),
+      );
+    });
+
+    it("does not retry the same double-unresolved shape on a non-Instagram platform — no first-party check to fall back on", async () => {
+      apify.detectPlatform.mockReturnValue("youtube");
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "youtube-double-unresolved",
+            status: "proof_under_review",
+            livePostUrl: "https://youtube.com/shorts/abc123",
             draftSubmittedAt: null,
             liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
             autoReviewResults: [
