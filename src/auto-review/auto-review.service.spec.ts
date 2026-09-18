@@ -123,8 +123,9 @@ describe("AutoReviewService", () => {
       expect(prisma.autoReviewResult.create).not.toHaveBeenCalled();
     });
 
-    it("auto_rejects when the live link doesn't resolve", async () => {
-      prisma.formatDeliverable.findUnique.mockResolvedValue(baseDeliverable);
+    it("auto_rejects when the live link doesn't resolve (non-Instagram, still Apify-backed)", async () => {
+      apify.detectPlatform.mockReturnValue("youtube");
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, platform: "youtube_short" });
       apify.checkPostResolves.mockResolvedValue({ status: "not_found" });
 
       await service.runProofPipeline("deliverable-1");
@@ -215,14 +216,16 @@ describe("AutoReviewService", () => {
       ).toBe("unresolved");
     });
 
-    it("never queries the connected account's media when ownership isn't verified — draft_live_match stays unresolved", async () => {
+    it("never compares draft-vs-live when there's no connection — resolves_and_public/ownership/draft_live_match all stay unresolved", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue({
         ...baseDeliverable,
         draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
       });
-      // No matching connection/author — ownership stays unresolved, not "pass".
+      // No connection at all — resolves_and_public and ownership_verified
+      // both now come from this same Instagram lookup, so it's still
+      // called (there's no connection check to short-circuit on before
+      // calling it), it just can't find anything without a connection.
       prisma.instagramConnection.findUnique.mockResolvedValue(null);
-      apify.getPostAuthor.mockResolvedValue(null);
       const fetchSpy = vi
         .spyOn(globalThis, "fetch")
         .mockImplementation(
@@ -233,8 +236,15 @@ describe("AutoReviewService", () => {
       await service.runProofPipeline("deliverable-1");
       fetchSpy.mockRestore();
 
-      expect(instagramOAuth.getOwnLivePostMedia).not.toHaveBeenCalled();
+      expect(instagramOAuth.getOwnLivePostMedia).toHaveBeenCalled();
       expect(gemini.compareDraftToLive).not.toHaveBeenCalled();
+      const call = prisma.autoReviewResult.create.mock.calls[0][0];
+      expect(
+        call.data.tier1Results.find((g: { gate: string }) => g.gate === "resolves_and_public").status,
+      ).toBe("unresolved");
+      expect(
+        call.data.tier1Results.find((g: { gate: string }) => g.gate === "ownership_verified").status,
+      ).toBe("unresolved");
     });
   });
 
@@ -749,7 +759,7 @@ describe("AutoReviewService", () => {
 
       await service.runProofPipeline("deliverable-1");
 
-      expect(apify.checkPostResolves).toHaveBeenCalled();
+      expect(prisma.autoReviewResult.create).toHaveBeenCalled();
     });
   });
 
@@ -795,10 +805,12 @@ describe("AutoReviewService", () => {
       expect(notifications.create).not.toHaveBeenCalled();
     });
 
-    it("applies a real auto_rejected proof decision when enforcement is on", async () => {
+    it("applies a real auto_rejected proof decision when enforcement is on (non-Instagram, still Apify-backed)", async () => {
       build(true, true);
+      apify.detectPlatform.mockReturnValue("youtube");
       prisma.formatDeliverable.findUnique.mockResolvedValue({
         ...enforceFixture,
+        platform: "youtube_short",
         status: "proof_under_review",
       });
       prisma.formatDeliverable.update.mockResolvedValue({
