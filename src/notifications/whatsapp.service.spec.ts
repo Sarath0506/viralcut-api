@@ -59,4 +59,44 @@ describe("WhatsappService.sendGeneralUpdate", () => {
     ).rejects.toThrow("404");
     expect(logSpy).not.toHaveBeenCalled();
   });
+
+  it("strips newlines from a multi-line rejection reason before sending — Meta rejects them (error 132018)", async () => {
+    // Confirmed live: a real auto-rejection notification failed with
+    // "(#132018) ... Param text cannot have new-line/tab characters" —
+    // buildAutoRejectionReason joins one line per gate/checklist item with
+    // \n, which is exactly this shape.
+    const service = new WhatsappService(makeConfig() as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ messages: [{ id: "wamid.X" }] }), { status: 200 }),
+    );
+
+    await service.sendGeneralUpdate("+919876543210", {
+      recipientName: "simba",
+      title: "Proof rejected",
+      message: "Automated review — 1 of 4 checks failed:\n✗ doesn't match\n✓ shows the tattoo\n✓ no unrelated content",
+    });
+
+    const sentBody = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    const messageParam = sentBody.template.components[0].parameters[1].text as string;
+    expect(messageParam).not.toMatch(/[\r\n\t]/);
+    expect(messageParam).toContain("doesn't match");
+    expect(messageParam).toContain("shows the tattoo");
+  });
+
+  it("collapses long runs of spaces — Meta also rejects more than 4 consecutive", async () => {
+    const service = new WhatsappService(makeConfig() as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ messages: [{ id: "wamid.X" }] }), { status: 200 }),
+    );
+
+    await service.sendGeneralUpdate("+919876543210", {
+      recipientName: "simba",
+      title: "t",
+      message: "too         many spaces",
+    });
+
+    const sentBody = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+    const messageParam = sentBody.template.components[0].parameters[1].text as string;
+    expect(messageParam).not.toMatch(/ {5,}/);
+  });
 });

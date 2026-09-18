@@ -3,6 +3,20 @@ import { ConfigService } from "@nestjs/config";
 
 import type { Env } from "../config/env";
 
+/** Meta rejects template body parameters containing newline/tab characters
+ * or more than 4 consecutive spaces (error 132018) — confirmed live
+ * against a real auto-rejection reason ("Automated review — N of M checks
+ * failed:\n✗ ...\n✓ ...", one line per gate/checklist item), which is
+ * exactly the shape most likely to trip this. Replaces line breaks with a
+ * bullet separator so a multi-line reason stays readable as a single-line
+ * message rather than silently failing to send. */
+function sanitizeForWhatsAppTemplate(text: string): string {
+  return text
+    .replace(/[\r\n\t]+/g, " • ")
+    .replace(/ {5,}/g, "    ")
+    .trim();
+}
+
 @Injectable()
 export class WhatsappService {
   private readonly logger = new Logger(WhatsappService.name);
@@ -100,8 +114,8 @@ export class WhatsappService {
           {
             type: "body",
             parameters: [
-              { type: "text", text: params.recipientName },
-              { type: "text", text: `${params.title} — ${params.message}` },
+              { type: "text", text: sanitizeForWhatsAppTemplate(params.recipientName) },
+              { type: "text", text: sanitizeForWhatsAppTemplate(`${params.title} — ${params.message}`) },
             ],
           },
         ],
