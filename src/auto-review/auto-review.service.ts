@@ -521,6 +521,9 @@ export class AutoReviewService {
     const ownershipGate = evaluateOwnershipGate(connection, author);
 
     let liveComparison: { same: boolean; confidence: number; reason: string } | null = null;
+    if (!draftMedia && fetchableDraftUrl) {
+      this.logger.warn(`draft_live_match unresolved for ${deliverableId}: fetchMedia on the draft (${fetchableDraftUrl}) failed`);
+    }
     if (draftMedia) {
       // Live media comes exclusively from the connected account's own Graph
       // API media_url now — real, first-party data, Instagram-only since
@@ -547,7 +550,18 @@ export class AutoReviewService {
             liveMediaBuffer: liveMediaFetched.buffer,
             liveMediaKind: liveMedia.kind,
           });
+          if (!liveComparison) {
+            this.logger.warn(`draft_live_match unresolved for ${deliverableId}: compareDraftToLive returned null`);
+          }
+        } else {
+          this.logger.warn(
+            `draft_live_match unresolved for ${deliverableId}: got a live media URL (${liveMedia.kind}) but fetchMedia on it failed`,
+          );
         }
+      } else if (platform === "instagram" && ownershipGate.status === "pass") {
+        this.logger.warn(
+          `draft_live_match unresolved for ${deliverableId}: getOwnLivePostMedia found nothing for ${livePostUrl}`,
+        );
       }
     }
 
