@@ -171,7 +171,7 @@ export class AutoReviewService {
    * submissions made while the flag was off got permanently skipped, with
    * no trace beyond a debug log line, until manually re-triggered.
    *
-   * This sweep is the backfill, covering three distinct gaps:
+   * This sweep is the backfill, covering four distinct gaps:
    *  1. Zero AutoReviewResult rows at all — never evaluated once (the flag
    *     was off, or the process crashed mid-run).
    *  2. Exactly one result, decision needs_review, tier2Results null, and
@@ -183,14 +183,22 @@ export class AutoReviewService {
    *     un-fetchable Drive link (which shows up as an unresolved Tier 1
    *     gate instead, and retrying that wouldn't help).
    *  3. Same shape, but the ONLY unresolved Tier 1 gate is draft_live_match
-   *     with ownership_verified already passed — that gate depends on a
-   *     live CDN fetch plus a Gemini call, so it fails the same transient
-   *     way checklist derivation does, not a structural limit. Confirmed
-   *     live: a real ownership-verified Instagram proof stuck exactly this
-   *     way (Apify's scrape came back empty for that one post) succeeded
-   *     immediately on manual retry.
-   * A resubmission is a different case in all three — submitDraft/submitLiveProof
-   * re-trigger the pipeline directly for that. All three gaps are merged into one
+   *     with ownership_verified already passed (non-Instagram only — see
+   *     #4) — that gate depends on a live CDN fetch plus a Gemini call, so
+   *     it fails the same transient way checklist derivation does, not a
+   *     structural limit.
+   *  4. Instagram only: any combination of resolves_and_public,
+   *     ownership_verified, and draft_live_match unresolved together — all
+   *     three come from the same first-party Graph API lookup with no
+   *     HikerAPI involved, so a shared failure across them is far more
+   *     likely one transient Graph API hiccup than several independent
+   *     structural limits. Confirmed live: HikerAPI itself went down (402
+   *     Payment Required) and took out ownership_verified and
+   *     draft_live_match together for one real submission — outside what
+   *     gap #3's single-gate rule would ever retry, even after the
+   *     HikerAPI dependency was removed.
+   * A resubmission is a different case in all four — submitDraft/submitLiveProof
+   * re-trigger the pipeline directly for that. All four gaps are merged into one
    * first-submitted-first-served queue, oldest first, same as a human
    * reviewer's queue would be. Bounded per run so a large backlog can't burn
    * through the Gemini/Apify rate limit in one pass — the remainder just
@@ -241,13 +249,30 @@ export class AutoReviewService {
           // check this yet, and retrying won't change that (e.g. an
           // un-fetchable Drive link).
           if (unresolved.length === 0) return true;
-          // One deliberate exception: draft_live_match, despite living in
-          // tier1Results, depends on a live CDN fetch plus a Gemini call —
-          // the same kind of transient-hiccup surface as checklist
-          // derivation, not a structural limit — once ownership_verified
-          // has already passed (proof the OAuth connection itself is fine).
-          // Confirmed live: a real ownership-verified Instagram proof stuck
-          // exactly this way succeeded on a manual retry moments later.
+          // Instagram exception: resolves_and_public, ownership_verified,
+          // and draft_live_match are ALL sourced from the same first-party
+          // Graph API lookup now (no HikerAPI involved for any of the
+          // three) — any combination of just these going unresolved is far
+          // more likely a transient Graph API hiccup than a structural
+          // limit. Confirmed live: HikerAPI itself went down (402 Payment
+          // Required — an account-balance issue) and took out
+          // ownership_verified AND draft_live_match together for one real
+          // submission, permanently excluding it from the old
+          // draft_live_match-alone-only rule below even after the HikerAPI
+          // dependency was removed entirely.
+          const instagramOnlyGates = new Set(["resolves_and_public", "ownership_verified", "draft_live_match"]);
+          if (
+            this.apify.detectPlatform(d.livePostUrl ?? "") === "instagram" &&
+            unresolved.every((g) => instagramOnlyGates.has(g.gate))
+          ) {
+            return true;
+          }
+          // Non-Instagram: draft_live_match depends on a live CDN fetch
+          // plus a Gemini call — the same kind of transient-hiccup surface
+          // as checklist derivation, not a structural limit — once
+          // ownership_verified has already passed (proof the OAuth
+          // connection itself is fine). Everything else on this platform
+          // still goes through Apify, so a wider exception isn't safe here.
           if (unresolved.length === 1 && unresolved[0].gate === "draft_live_match") {
             return tier1.find((g) => g.gate === "ownership_verified")?.status === "pass";
           }
