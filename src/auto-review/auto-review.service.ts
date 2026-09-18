@@ -18,6 +18,8 @@ import { fetchMedia } from "./media-fetch";
 import { compressVideoForGemini } from "./video-compress";
 import {
   evaluateDraftLiveMatchGate,
+  evaluateInstagramOwnershipGate,
+  evaluateInstagramResolvesGate,
   evaluateOwnershipGate,
   evaluatePlatformMatchGate,
   evaluateResolvesGate,
@@ -508,39 +510,46 @@ export class AutoReviewService {
     const livePostUrl = deliverable.livePostUrl;
     const creatorProfileId = deliverable.participation.creatorProfileId;
     const platform = this.apify.detectPlatform(livePostUrl);
+    const isInstagram = platform === "instagram";
     // Prefer a brand/admin-uploaded copy of the source video — set when
     // draftDriveUrl is a Drive link the pipeline can't fetch itself.
     const fetchableDraftUrl = deliverable.adminUploadedDraftUrl ?? deliverable.draftDriveUrl;
 
-    const [resolution, author, connection, draftMedia] = await Promise.all([
-      this.apify.checkPostResolves(livePostUrl),
-      this.apify.getPostAuthor(livePostUrl),
+    // Instagram no longer touches Apify/HikerAPI at all for these checks —
+    // confirmed live that HikerAPI can go down entirely (402 Payment
+    // Required, an account-balance issue, not a code bug) and silently
+    // stall every Instagram proof stuck behind it. One Graph API lookup
+    // against the connected account's own media list — first-party, no
+    // third party to go down — answers resolves_and_public, ownership, and
+    // (below) draft_live_match's media source all at once: reachable only
+    // when it's genuinely this account's own post. YouTube/Twitter still
+    // use Apify — there's no OAuth-backed alternative for those yet, and
+    // removing it would break their proof review entirely with nothing to
+    // replace it (a tradeoff already flagged and accepted separately).
+    const [resolution, author, connection, draftMedia, instagramOwnMedia] = await Promise.all([
+      isInstagram ? Promise.resolve(null) : this.apify.checkPostResolves(livePostUrl),
+      isInstagram ? Promise.resolve(null) : this.apify.getPostAuthor(livePostUrl),
       this.getConnection(creatorProfileId, platform),
       fetchableDraftUrl ? fetchMedia(fetchableDraftUrl) : Promise.resolve(null),
+      isInstagram ? this.instagramOAuth.getOwnLivePostMedia(creatorProfileId, livePostUrl) : Promise.resolve(null),
     ]);
-    const ownershipGate = evaluateOwnershipGate(connection, author);
+    const resolvesGate = isInstagram
+      ? evaluateInstagramResolvesGate(connection, instagramOwnMedia)
+      : evaluateResolvesGate(resolution!);
+    const ownershipGate = isInstagram
+      ? evaluateInstagramOwnershipGate(connection, instagramOwnMedia)
+      : evaluateOwnershipGate(connection, author);
 
     let liveComparison: { same: boolean; confidence: number; reason: string } | null = null;
     if (!draftMedia && fetchableDraftUrl) {
       this.logger.warn(`draft_live_match unresolved for ${deliverableId}: fetchMedia on the draft (${fetchableDraftUrl}) failed`);
     }
     if (draftMedia) {
-      // Live media comes exclusively from the connected account's own Graph
-      // API media_url now — real, first-party data, Instagram-only since
-      // that's the only platform with a real OAuth connection to draw on
-      // here. Dropped the Apify/HikerAPI scrape fallback entirely: it only
-      // ever covered Instagram anyway (hard-coded no-op for every other
-      // platform), it isn't reliable (confirmed live: it returned no
-      // preview for a real ownership-verified post, which is what this
-      // first-party path replaced), and this way "how did we get this
-      // media" has exactly one answer instead of two. Draft-vs-live stays
-      // unresolved — same as any other platform — whenever ownership isn't
-      // independently verified first; nothing here scrapes a live post on
-      // trust alone anymore.
-      const liveMedia =
-        platform === "instagram" && ownershipGate.status === "pass"
-          ? await this.instagramOAuth.getOwnLivePostMedia(creatorProfileId, livePostUrl)
-          : null;
+      // Reuses the same Instagram lookup made above — no second Graph API
+      // call. Never scrapes a live post on trust alone for any platform:
+      // draft-vs-live stays unresolved whenever ownership isn't
+      // independently verified first.
+      const liveMedia = ownershipGate.status === "pass" ? instagramOwnMedia : null;
       if (liveMedia) {
         const liveMediaFetched = await fetchMedia(liveMedia.url);
         if (liveMediaFetched) {
@@ -558,7 +567,7 @@ export class AutoReviewService {
             `draft_live_match unresolved for ${deliverableId}: got a live media URL (${liveMedia.kind}) but fetchMedia on it failed`,
           );
         }
-      } else if (platform === "instagram" && ownershipGate.status === "pass") {
+      } else if (isInstagram && ownershipGate.status === "pass") {
         this.logger.warn(
           `draft_live_match unresolved for ${deliverableId}: getOwnLivePostMedia found nothing for ${livePostUrl}`,
         );
@@ -566,7 +575,7 @@ export class AutoReviewService {
     }
 
     const tier1Results: GateResult[] = [
-      evaluateResolvesGate(resolution),
+      resolvesGate,
       evaluatePlatformMatchGate(platform, deliverable.platform),
       ownershipGate,
       evaluateDraftLiveMatchGate(liveComparison),

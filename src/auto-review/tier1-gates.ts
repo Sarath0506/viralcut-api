@@ -1,6 +1,66 @@
 import type { PostAuthor, PostResolution } from "../common/apify.service";
 import type { GateResult } from "./auto-review.types";
 
+/** Instagram-only: resolves_and_public and ownership_verified are both
+ * derived from the SAME first-party Graph API lookup — the connected
+ * account's own media list — instead of HikerAPI's checkPostResolves/
+ * getPostAuthor. A match proves both the post exists and who posted it in
+ * one first-party call: only reachable when it's genuinely this account's
+ * own post, so there's nothing further to distinguish between "resolves"
+ * and "is theirs" the way there is for a third-party scrape of an
+ * arbitrary public URL. No connection, or no match found within the
+ * lookup's page cap, is unresolved rather than a hard fail — the same
+ * "let a human decide" philosophy the non-Instagram version already uses. */
+export function evaluateInstagramResolvesGate(
+  connection: { platformHandle: string; platformUserId: string } | null,
+  ownMedia: { kind: "video" | "image"; url: string } | null,
+): GateResult {
+  if (!connection) {
+    return {
+      gate: "resolves_and_public",
+      status: "unresolved",
+      reason: "Creator is not connected via official OAuth for this platform",
+    };
+  }
+  if (ownMedia) {
+    return {
+      gate: "resolves_and_public",
+      status: "pass",
+      reason: "Live post found on the connected account's own Instagram media",
+    };
+  }
+  return {
+    gate: "resolves_and_public",
+    status: "unresolved",
+    reason: "Could not find this post on the connected account's own Instagram media",
+  };
+}
+
+export function evaluateInstagramOwnershipGate(
+  connection: { platformHandle: string; platformUserId: string } | null,
+  ownMedia: { kind: "video" | "image"; url: string } | null,
+): GateResult {
+  if (!connection) {
+    return {
+      gate: "ownership_verified",
+      status: "unresolved",
+      reason: "Creator is not connected via official OAuth for this platform",
+    };
+  }
+  if (ownMedia) {
+    return {
+      gate: "ownership_verified",
+      status: "pass",
+      reason: "Live post found on the connected account's own Instagram media",
+    };
+  }
+  return {
+    gate: "ownership_verified",
+    status: "unresolved",
+    reason: "Could not find this post on the connected account's own Instagram media — needs a human to check",
+  };
+}
+
 export function evaluateResolvesGate(resolution: PostResolution): GateResult {
   if (resolution.status === "resolved") {
     return {

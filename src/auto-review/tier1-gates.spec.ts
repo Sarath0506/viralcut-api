@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   evaluateDraftLiveMatchGate,
+  evaluateInstagramOwnershipGate,
+  evaluateInstagramResolvesGate,
   evaluateOwnershipGate,
   evaluatePlatformMatchGate,
   evaluateResolvesGate,
@@ -64,6 +66,26 @@ describe("evaluateOwnershipGate", () => {
     const connection = { platformHandle: "creator", platformUserId: "1" };
     const result = evaluateOwnershipGate(connection, { handle: "someone_else", platformUserId: "999" });
     expect(result.status).toBe("unresolved");
+  });
+});
+
+describe("evaluateInstagramResolvesGate / evaluateInstagramOwnershipGate", () => {
+  const connection = { platformHandle: "creator", platformUserId: "1" };
+  const ownMedia = { kind: "video" as const, url: "https://cdn.example.com/x.mp4" };
+
+  it("both are unresolved when there's no connection at all", () => {
+    expect(evaluateInstagramResolvesGate(null, ownMedia).status).toBe("unresolved");
+    expect(evaluateInstagramOwnershipGate(null, ownMedia).status).toBe("unresolved");
+  });
+
+  it("both pass when the post is found on the connected account's own media", () => {
+    expect(evaluateInstagramResolvesGate(connection, ownMedia).status).toBe("pass");
+    expect(evaluateInstagramOwnershipGate(connection, ownMedia).status).toBe("pass");
+  });
+
+  it("both are unresolved (never a hard fail) when connected but the post isn't found — no HikerAPI fallback to fall back on", () => {
+    expect(evaluateInstagramResolvesGate(connection, null).status).toBe("unresolved");
+    expect(evaluateInstagramOwnershipGate(connection, null).status).toBe("unresolved");
   });
 });
 
