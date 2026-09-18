@@ -879,6 +879,50 @@ describe("AutoReviewService", () => {
       );
     });
 
+    it("applies a real auto_rejected proof decision when the live content confidently doesn't match the approved draft", async () => {
+      build(true, true);
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        ...enforceFixture,
+        status: "proof_under_review",
+        draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
+      });
+      prisma.instagramConnection.findUnique.mockResolvedValue({
+        platformHandle: "creator",
+        platformUserId: "1",
+      });
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(
+          async () =>
+            new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
+        );
+      instagramOAuth.getOwnLivePostMedia.mockResolvedValue({ kind: "video", url: "https://example.com/live.mp4" });
+      // A confident mismatch — the creator's actual live post doesn't
+      // resemble their approved draft at all (e.g. the wrong URL).
+      gemini.compareDraftToLive.mockResolvedValue({
+        same: false,
+        confidence: 0.95,
+        reason: "completely different subject and setting",
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({
+        ...enforceFixture,
+        status: "proof_rejected",
+      });
+
+      await service.runProofPipeline("deliverable-1");
+      fetchSpy.mockRestore();
+
+      const updateCall = prisma.formatDeliverable.update.mock.calls[0][0];
+      expect(updateCall.data.status).toBe("proof_rejected");
+      expect(updateCall.data.rejectionReason).toContain("resubmit");
+      expect(updateCall.data.rejectionReason).toContain("completely different subject and setting");
+      expect(notifications.create).toHaveBeenCalledWith(
+        "creator-1",
+        "creator",
+        expect.objectContaining({ type: "proof_rejected" }),
+      );
+    });
+
     it("applies a real auto_rejected draft decision when enforcement is on, recording a rejection event", async () => {
       build(true, true);
       prisma.formatDeliverable.findUnique.mockResolvedValue({

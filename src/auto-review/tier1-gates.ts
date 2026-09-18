@@ -157,6 +157,13 @@ export function evaluateOwnershipGate(
   };
 }
 
+// Mirrors AutoReviewService's own tier2 thresholds (HIGH_CONFIDENCE_FAIL_THRESHOLD/
+// LOW_CONFIDENCE_THRESHOLD) — same two-tier reasoning applied to this Tier 1
+// gate: confident enough to act on, or not even confident enough to say
+// anything.
+const DRAFT_LIVE_MATCH_FAIL_CONFIDENCE = 0.8;
+const DRAFT_LIVE_MATCH_LOW_CONFIDENCE = 0.7;
+
 /** Needs Tier 2's vision capability, so it's evaluated from whatever
  * comparison result the orchestrator could actually produce — null covers
  * every reason that could be missing (Drive-linked draft, live media not
@@ -172,7 +179,7 @@ export function evaluateDraftLiveMatchGate(
       reason: "Could not compare draft and live content (unfetchable media, unsupported platform, or Tier 2 not configured)",
     };
   }
-  if (comparison.confidence < 0.7) {
+  if (comparison.confidence < DRAFT_LIVE_MATCH_LOW_CONFIDENCE) {
     return {
       gate: "draft_live_match",
       status: "unresolved",
@@ -182,8 +189,18 @@ export function evaluateDraftLiveMatchGate(
   if (comparison.same) {
     return { gate: "draft_live_match", status: "pass", reason: comparison.reason };
   }
-  // A confident mismatch still isn't a hard fail — per the spec, this needs
-  // a human to see what actually happened, not an automatic reject.
+  // A confident mismatch is a real, actionable signal — most commonly the
+  // creator submitted the wrong live URL — so it auto-rejects with a reason
+  // clear enough to resubmit against, the same way any other hard-fail gate
+  // does. Below the high-confidence bar, it's ambiguous enough to still
+  // leave for a human rather than rejecting a real payout automatically.
+  if (comparison.confidence >= DRAFT_LIVE_MATCH_FAIL_CONFIDENCE) {
+    return {
+      gate: "draft_live_match",
+      status: "fail",
+      reason: `Your live post doesn't match your approved draft — double-check the link and resubmit. (${comparison.reason})`,
+    };
+  }
   return {
     gate: "draft_live_match",
     status: "unresolved",
