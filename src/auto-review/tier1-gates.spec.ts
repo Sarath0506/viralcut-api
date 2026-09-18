@@ -104,8 +104,15 @@ describe("evaluateDraftLiveMatchGate", () => {
     expect(result.status).toBe("pass");
   });
 
-  it("is unresolved (not failed) on a confident mismatch — needs a human to look", () => {
+  it("fails on a high-confidence mismatch — auto-rejects with a resubmit-ready reason", () => {
     const result = evaluateDraftLiveMatchGate({ same: false, confidence: 0.95, reason: "different clip" });
+    expect(result.status).toBe("fail");
+    expect(result.reason).toContain("resubmit");
+    expect(result.reason).toContain("different clip");
+  });
+
+  it("stays unresolved on a moderate-confidence mismatch — not confident enough to auto-reject", () => {
+    const result = evaluateDraftLiveMatchGate({ same: false, confidence: 0.75, reason: "maybe different" });
     expect(result.status).toBe("unresolved");
   });
 });
