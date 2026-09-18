@@ -1184,6 +1184,48 @@ describe("AutoReviewService", () => {
       );
     });
 
+    it("retries a stuck draft_live_match even when tier2Results already succeeded — they're independent Gemini calls", async () => {
+      // Confirmed live: once Gemini started working again, a real
+      // evaluateCompliance pass completed (tier2Results populated) in the
+      // very same run that left draft_live_match unresolved — a separate
+      // compareDraftToLive call. The old filter treated any non-null
+      // tier2Results as "nothing left to retry" and silently stopped
+      // retrying this deliverable forever.
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "tier2-succeeded-but-live-match-stuck",
+            status: "proof_under_review",
+            livePostUrl: "https://www.instagram.com/reel/abc123/",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: [
+                  { criterionId: "c1", label: "x", pass: true, confidence: 1, reason: "ok", required: true },
+                ],
+                tier1Results: [
+                  { gate: "resolves_and_public", status: "pass", reason: "resolved" },
+                  { gate: "platform_match", status: "pass", reason: "matches" },
+                  { gate: "ownership_verified", status: "pass", reason: "matches" },
+                  { gate: "draft_live_match", status: "unresolved", reason: "Could not compare draft and live content" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, livePostUrl: null });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "tier2-succeeded-but-live-match-stuck" } }),
+      );
+    });
+
     it("does not retry the same double-unresolved shape on a non-Instagram platform — no first-party check to fall back on", async () => {
       apify.detectPlatform.mockReturnValue("youtube");
       prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
