@@ -240,15 +240,27 @@ export class AutoReviewService {
       const stuckQueue = stuckCandidates
         .filter((d) => {
           const latest = d.autoReviewResults[0];
-          if (!latest || latest.decision !== "needs_review" || latest.tier2Results !== null) return false;
+          if (!latest || latest.decision !== "needs_review") return false;
           const tier1 = latest.tier1Results as GateResult[] | null;
           if (!Array.isArray(tier1)) return false;
           const unresolved = tier1.filter((g) => g.status === "unresolved");
-          // Normally only retry when every Tier 1 gate actually resolved —
-          // an unresolved gate usually means the pipeline genuinely can't
-          // check this yet, and retrying won't change that (e.g. an
-          // un-fetchable Drive link).
-          if (unresolved.length === 0) return true;
+          // Every Tier 1 gate resolved, but tier2Results is still null —
+          // means getOrCreateChecklist's Gemini call itself came back empty
+          // that one time (confirmed live: a transient API hiccup, not a
+          // content problem). tier2Results being non-null here would mean
+          // Tier 2 actually ran and there's nothing left to retry.
+          if (unresolved.length === 0) return latest.tier2Results === null;
+          // Everything past this point is about an unresolved Tier 1 gate,
+          // not tier2Results — deliberately NOT gated on tier2Results being
+          // null anymore. draft_live_match is its own independent Gemini
+          // call (compareDraftToLive, not evaluateCompliance): a real
+          // compliance pass can complete in the very same run that leaves
+          // draft_live_match unresolved, and that's exactly what happened
+          // live once Gemini started working again — tier2Results came back
+          // fully populated while draft_live_match still needed a retry of
+          // its own, and the old tier2Results-must-be-null check silently
+          // excluded it from ever being retried again.
+          //
           // Instagram exception: resolves_and_public, ownership_verified,
           // and draft_live_match are ALL sourced from the same first-party
           // Graph API lookup now (no HikerAPI involved for any of the
