@@ -44,7 +44,7 @@ describe("computeParticipationSummary", () => {
         ],
         CampaignStatus.paused,
       ),
-    ).toBe("proof_complete");
+    ).toBe("in_review");
   });
 
   it("returns joined when all deliverables are draft_pending", () => {
@@ -138,7 +138,7 @@ describe("computeParticipationSummary", () => {
     ).toBe("action_required");
   });
 
-  it("returns proof_complete only when all formats have live proof", () => {
+  it("returns in_review when all formats have live proof submitted but not yet approved", () => {
     expect(
       computeParticipationSummary(
         [
@@ -148,7 +148,45 @@ describe("computeParticipationSummary", () => {
             "https://instagram.com/reel/1",
           ),
           d(
+            FormatDeliverableStatus.proof_under_review,
+            "https://drive.google.com/b",
+            "https://youtube.com/shorts/1",
+          ),
+        ],
+        CampaignStatus.live,
+      ),
+    ).toBe("in_review");
+  });
+
+  it("returns proof_complete only once every format is actually proof_approved", () => {
+    expect(
+      computeParticipationSummary(
+        [
+          d(
+            FormatDeliverableStatus.proof_approved,
+            "https://drive.google.com/a",
+            "https://instagram.com/reel/1",
+          ),
+          d(
             FormatDeliverableStatus.live_submitted,
+            "https://drive.google.com/b",
+            "https://youtube.com/shorts/1",
+          ),
+        ],
+        CampaignStatus.live,
+      ),
+    ).toBe("in_review");
+
+    expect(
+      computeParticipationSummary(
+        [
+          d(
+            FormatDeliverableStatus.proof_approved,
+            "https://drive.google.com/a",
+            "https://instagram.com/reel/1",
+          ),
+          d(
+            FormatDeliverableStatus.proof_approved,
             "https://drive.google.com/b",
             "https://youtube.com/shorts/1",
           ),

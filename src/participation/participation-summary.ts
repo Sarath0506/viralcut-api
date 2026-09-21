@@ -38,15 +38,22 @@ export function computeParticipationSummary(
     return "drafts_incomplete";
   }
 
-  const proofDoneStatuses = [
+  const proofSubmittedStatuses = [
     FormatDeliverableStatus.live_submitted,
     FormatDeliverableStatus.proof_under_review,
     FormatDeliverableStatus.proof_approved,
   ] as string[];
 
-  const allProofDone = deliverables.every((d) => proofDoneStatuses.includes(d.status));
-  if (allProofDone) {
-    return "proof_complete";
+  const allProofSubmitted = deliverables.every((d) => proofSubmittedStatuses.includes(d.status));
+  if (allProofSubmitted) {
+    // Submitting live proof isn't the finish line — a human (or auto-review)
+    // still has to approve it. Only every deliverable actually reaching
+    // proof_approved counts as complete; live_submitted/proof_under_review
+    // means proof is in, not proof is done.
+    const allProofApproved = deliverables.every(
+      (d) => d.status === FormatDeliverableStatus.proof_approved,
+    );
+    return allProofApproved ? "proof_complete" : "in_review";
   }
 
   const hasRejected = deliverables.some(

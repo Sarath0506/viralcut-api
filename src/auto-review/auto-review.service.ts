@@ -29,6 +29,13 @@ const GEMINI_MODEL_VERSION = "gemini-2.5-flash";
 const HIGH_CONFIDENCE_FAIL_THRESHOLD = 0.8;
 const LOW_CONFIDENCE_THRESHOLD = 0.7;
 
+// catchUpMissedAutoReviews retries a stuck needs_review roughly once per
+// 5-minute sweep — 12 attempts is about an hour of retrying before it gives
+// up and leaves it for a human. Long enough for any real transient hiccup
+// (a Gemini blip, a momentary R2/Graph API failure) to clear on its own;
+// short enough that a genuinely broken submission doesn't run forever.
+const MAX_STUCK_RETRIES = 12;
+
 const PLATFORM_LABELS: Record<string, string> = {
   instagram_reel: "Instagram Reel",
   instagram_reels: "Instagram Reel",
@@ -243,7 +250,10 @@ export class AutoReviewService {
         }),
         this.prisma.formatDeliverable.findMany({
           where: { status: { in: reviewableStatuses }, autoReviewResults: { some: {} } },
-          include: { autoReviewResults: { orderBy: { createdAt: "desc" }, take: 1 } },
+          include: {
+            autoReviewResults: { orderBy: { createdAt: "desc" }, take: 1 },
+            _count: { select: { autoReviewResults: true } },
+          },
           take: 50, // bounds the scan itself, not the retry count after filtering
         }),
       ]);
@@ -252,6 +262,21 @@ export class AutoReviewService {
         .filter((d) => {
           const latest = d.autoReviewResults[0];
           if (!latest || latest.decision !== "needs_review") return false;
+          // Confirmed live: without a cap, two stuck deliverables (one of
+          // them leftover test data) were retried 900+ times each over 17
+          // days — 94% of every auto-review attempt this pipeline has ever
+          // made — while burning real Gemini/Graph API quota every 5
+          // minutes for something that was never going to resolve. Every
+          // retry path below assumes a transient hiccup; past this many
+          // attempts (~an hour of retries) that assumption has been
+          // disproven, so it stops and waits for a human instead of
+          // retrying forever.
+          if (d._count.autoReviewResults >= MAX_STUCK_RETRIES) {
+            this.logger.warn(
+              `Giving up on retrying ${d.id} after ${d._count.autoReviewResults} attempts — needs a human, not another retry`,
+            );
+            return false;
+          }
           const tier1 = latest.tier1Results as GateResult[] | null;
           if (!Array.isArray(tier1)) return false;
           const unresolved = tier1.filter((g) => g.status === "unresolved");
@@ -298,6 +323,17 @@ export class AutoReviewService {
           // still goes through Apify, so a wider exception isn't safe here.
           if (unresolved.length === 1 && unresolved[0].gate === "draft_live_match") {
             return tier1.find((g) => g.gate === "ownership_verified")?.status === "pass";
+          }
+          // Draft stage's only Tier 1 gate is format_match — the same kind
+          // of "fetchMedia on a real, fetchable URL failed" transient
+          // surface as draft_live_match above, not a structural limit.
+          // Confirmed live: five real drafts failed this gate once each
+          // (misreported as "likely a Drive link"), and every one of their
+          // draft URLs fetches fine on demand weeks later — nothing was
+          // ever wrong with the file, they just never got a second try
+          // because this stage had no retry path at all until now.
+          if (unresolved.length === 1 && unresolved[0].gate === "format_match") {
+            return true;
           }
           return false;
         })
