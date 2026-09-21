@@ -539,6 +539,51 @@ describe("ParticipationService", () => {
 
       expect(result.entries[0].displayName).toBe("Meme page");
     });
+
+    it("only counts proof_approved deliverables toward a creator's total", async () => {
+      prisma.campaign.findUnique.mockResolvedValue({
+        ratePer1kPaise: 5000,
+        maxPayoutPaise: 100000,
+      });
+      prisma.campaignParticipation.findMany.mockResolvedValue([]);
+
+      await service.getLeaderboard("camp-1");
+
+      expect(prisma.campaignParticipation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: expect.objectContaining({
+            deliverables: expect.objectContaining({
+              where: { status: FormatDeliverableStatus.proof_approved },
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("ranks by total earnings, not raw views — a real paid amount can outrank more views", async () => {
+      prisma.campaign.findUnique.mockResolvedValue({
+        ratePer1kPaise: 5000,
+        maxPayoutPaise: 100000,
+      });
+      prisma.campaignParticipation.findMany.mockResolvedValue([
+        {
+          creator: { id: "user-1", displayName: "More Views", username: "a", avatarUrl: null },
+          creatorProfile: { id: "profile-a", platform: "instagram", handle: "a", label: null },
+          // 5000 views, no real payout yet — estimate: 5000/1000 * 5000 = 25000 paise.
+          deliverables: [{ viewCount: 5000, paidAmountPaise: null }],
+        },
+        {
+          creator: { id: "user-2", displayName: "Less Views More Paid", username: "b", avatarUrl: null },
+          creatorProfile: { id: "profile-b", platform: "instagram", handle: "b", label: null },
+          // Fewer views, but a real paid amount higher than the other's estimate.
+          deliverables: [{ viewCount: 1000, paidAmountPaise: 50000 }],
+        },
+      ]);
+
+      const result = await service.getLeaderboard("camp-1");
+
+      expect(result.entries.map((e) => e.creatorProfileId)).toEqual(["profile-b", "profile-a"]);
+    });
   });
 
   describe("getOverallLeaderboard", () => {
@@ -594,6 +639,58 @@ describe("ParticipationService", () => {
       expect(result.entries.find((e) => e.creatorId === "user-2")?.displayName).toBe(
         "Priya Singh",
       );
+    });
+
+    it("only counts proof_approved deliverables toward a creator's total", async () => {
+      prisma.campaignParticipation.findMany.mockResolvedValue([]);
+
+      await service.getOverallLeaderboard("user-1");
+
+      expect(prisma.campaignParticipation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: expect.objectContaining({
+            deliverables: expect.objectContaining({
+              where: { status: FormatDeliverableStatus.proof_approved },
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("ranks by total earnings, not raw views — confirmed live: a better campaign rate can outrank more views", async () => {
+      prisma.campaignParticipation.findMany.mockResolvedValue([
+        {
+          creatorId: "user-1",
+          creator: {
+            id: "user-1",
+            displayName: "More Views",
+            username: "a",
+            avatarUrl: null,
+            verifiedCreatorId: "111111111",
+          },
+          // Low rate campaign — lots of views, modest earnings.
+          campaign: { ratePer1kPaise: 1000, maxPayoutPaise: 1000000 },
+          deliverables: [{ viewCount: 10000, paidAmountPaise: null }], // 10000 paise
+        },
+        {
+          creatorId: "user-2",
+          creator: {
+            id: "user-2",
+            displayName: "Better Rate",
+            username: "b",
+            avatarUrl: null,
+            verifiedCreatorId: "222222222",
+          },
+          // High rate campaign — fewer views, more actual earnings.
+          campaign: { ratePer1kPaise: 20000, maxPayoutPaise: 1000000 },
+          deliverables: [{ viewCount: 1000, paidAmountPaise: null }], // 20000 paise
+        },
+      ]);
+
+      const result = await service.getOverallLeaderboard("user-1");
+
+      expect(result.entries.map((e) => e.creatorId)).toEqual(["user-2", "user-1"]);
+      expect(result.entries[0].rank).toBe(1);
     });
   });
 
