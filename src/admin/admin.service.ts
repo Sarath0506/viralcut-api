@@ -1158,6 +1158,7 @@ export class AdminService {
         title: "You got paid 💸",
         body: `${title} (${d.platform}) payout has landed in your wallet.`,
         link: "/wallet",
+        sendWhatsapp: true,
       });
 
       if (repost) {
@@ -1169,6 +1170,7 @@ export class AdminService {
             title: "Marketplace repost payout 💸",
             body: `Your clip was reposted for ${title} (${d.platform}) — your share has landed in your wallet.`,
             link: "/wallet",
+            sendWhatsapp: true,
           },
         );
       }
