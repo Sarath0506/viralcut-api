@@ -176,6 +176,8 @@ export class ParticipationService {
       shareCount: d.shareCount,
       estimatedPaise,
       ratePer1kPaise,
+      paidAt: d.paidAt?.toISOString() ?? null,
+      paidAmountPaise: d.paidAmountPaise,
       rejectionHistory: this.formatRejectionHistory(d.rejectionEvents),
     };
   }
@@ -1091,7 +1093,16 @@ export class ParticipationService {
         creatorProfile: {
           select: { id: true, platform: true, handle: true, label: true },
         },
-        deliverables: { select: { viewCount: true, paidAmountPaise: true } },
+        // Only proof_approved counts toward a rank — a rejected or
+        // still-pending submission's views/estimated-earnings shouldn't
+        // inflate a creator's total, since it's exactly what
+        // AdminService.payoutCampaign itself gates real payouts on.
+        // Confirmed live: without this, a creator's total included
+        // rejected/unreviewed deliverables identically to approved ones.
+        deliverables: {
+          where: { status: FormatDeliverableStatus.proof_approved },
+          select: { viewCount: true, paidAmountPaise: true },
+        },
       },
     });
 
@@ -1125,7 +1136,10 @@ export class ParticipationService {
       };
     });
 
-    entries.sort((a, b) => b.totalViews - a.totalViews);
+    // Rank reflects what a creator actually earned, not raw reach — the ₹
+    // amount shown next to each entry needs to match the order it's shown
+    // in. Views is only a tiebreak for two creators earning the same amount.
+    entries.sort((a, b) => b.totalEarnedPaise - a.totalEarnedPaise || b.totalViews - a.totalViews);
     const ranked = entries.map((e, i) => ({ ...e, rank: i + 1 }));
     const currentUser = currentCreatorProfileId
       ? ranked.find((e) => e.creatorProfileId === currentCreatorProfileId) ?? null
@@ -1154,7 +1168,12 @@ export class ParticipationService {
           select: { id: true, displayName: true, username: true, avatarUrl: true, verifiedCreatorId: true },
         },
         campaign: { select: { ratePer1kPaise: true, maxPayoutPaise: true } },
-        deliverables: { select: { viewCount: true, paidAmountPaise: true } },
+        // Only proof_approved counts toward a rank — see getLeaderboard for
+        // why (matches what AdminService.payoutCampaign actually pays out).
+        deliverables: {
+          where: { status: FormatDeliverableStatus.proof_approved },
+          select: { viewCount: true, paidAmountPaise: true },
+        },
       },
     });
 
@@ -1204,7 +1223,8 @@ export class ParticipationService {
     }
 
     const entries = [...byCreator.values()];
-    entries.sort((a, b) => b.totalViews - a.totalViews);
+    // Rank reflects total earnings, not raw reach — see getLeaderboard.
+    entries.sort((a, b) => b.totalEarnedPaise - a.totalEarnedPaise || b.totalViews - a.totalViews);
     const ranked = entries.map((e, i) => ({ ...e, rank: i + 1 }));
     const currentUser = ranked.find((e) => e.creatorId === currentUserId) ?? null;
 
