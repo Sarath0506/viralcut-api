@@ -1063,6 +1063,7 @@ describe("AutoReviewService", () => {
             status: "under_review",
             draftSubmittedAt: new Date("2026-01-01T08:00:00Z"),
             liveSubmittedAt: null,
+            _count: { autoReviewResults: 1 },
             autoReviewResults: [
               {
                 decision: "needs_review",
@@ -1086,15 +1087,47 @@ describe("AutoReviewService", () => {
       );
     });
 
-    it("does not retry a deliverable whose needs_review is a genuine unresolved gate (e.g. an un-fetchable Drive link)", async () => {
+    it("retries a draft stuck on a lone unresolved format_match — confirmed live: real, fetchable drafts fail this the same transient way draft_live_match does", async () => {
       prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
         if (!where.autoReviewResults?.some) return Promise.resolve([]);
         return Promise.resolve([
           {
-            id: "genuinely-unresolved",
+            id: "stuck-format-match",
             status: "under_review",
             draftSubmittedAt: new Date("2026-01-01T08:00:00Z"),
             liveSubmittedAt: null,
+            _count: { autoReviewResults: 1 },
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                tier1Results: [
+                  { gate: "format_match", status: "unresolved", reason: "Draft is not an app-uploaded file" },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({ ...baseDeliverable, draftDriveUrl: null });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "stuck-format-match" } }),
+      );
+    });
+
+    it("stops retrying once a deliverable hits MAX_STUCK_RETRIES — confirmed live: two deliverables were retried 900+ times each over 17 days with no cap", async () => {
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "retried-too-many-times",
+            status: "under_review",
+            draftSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            liveSubmittedAt: null,
+            _count: { autoReviewResults: 12 },
             autoReviewResults: [
               {
                 decision: "needs_review",
@@ -1122,6 +1155,7 @@ describe("AutoReviewService", () => {
             status: "proof_under_review",
             draftSubmittedAt: null,
             liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            _count: { autoReviewResults: 1 },
             autoReviewResults: [
               {
                 decision: "needs_review",
@@ -1160,6 +1194,7 @@ describe("AutoReviewService", () => {
             livePostUrl: "https://www.instagram.com/reel/abc123/",
             draftSubmittedAt: null,
             liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            _count: { autoReviewResults: 1 },
             autoReviewResults: [
               {
                 decision: "needs_review",
@@ -1200,6 +1235,7 @@ describe("AutoReviewService", () => {
             livePostUrl: "https://www.instagram.com/reel/abc123/",
             draftSubmittedAt: null,
             liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            _count: { autoReviewResults: 1 },
             autoReviewResults: [
               {
                 decision: "needs_review",
@@ -1237,6 +1273,7 @@ describe("AutoReviewService", () => {
             livePostUrl: "https://youtube.com/shorts/abc123",
             draftSubmittedAt: null,
             liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            _count: { autoReviewResults: 1 },
             autoReviewResults: [
               {
                 decision: "needs_review",
