@@ -34,7 +34,9 @@ const LOW_CONFIDENCE_THRESHOLD = 0.7;
 // up and leaves it for a human. Long enough for any real transient hiccup
 // (a Gemini blip, a momentary R2/Graph API failure) to clear on its own;
 // short enough that a genuinely broken submission doesn't run forever.
-const MAX_STUCK_RETRIES = 12;
+// Exported so the brand-facing API can tell a client "attempt N of this many"
+// without a second, driftable copy of the same number.
+export const MAX_STUCK_RETRIES = 12;
 
 const PLATFORM_LABELS: Record<string, string> = {
   instagram_reel: "Instagram Reel",

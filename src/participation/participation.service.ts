@@ -15,7 +15,7 @@ import {
 } from "@prisma/client";
 
 import { ActivityLogService } from "../activity/activity-log.service";
-import { AutoReviewService } from "../auto-review/auto-review.service";
+import { AutoReviewService, MAX_STUCK_RETRIES } from "../auto-review/auto-review.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
 import { ApifyService, type PlatformViewResult } from "../common/apify.service";
@@ -880,6 +880,11 @@ export class ParticipationService {
         modelVersion: r.modelVersion,
         createdAt: r.createdAt.toISOString(),
       })),
+      // Lets the client tell "still retrying" apart from "gave up" — the
+      // catch-up sweep stops once a stage's attempt count reaches this, so a
+      // needs_review result short of it is still actively being worked, not
+      // stalled.
+      autoReviewMaxRetries: MAX_STUCK_RETRIES,
     };
   }
 
