@@ -946,22 +946,29 @@ export class AutoReviewService {
     tier2Results: CriterionResult[] | null,
   ): AutoReviewOutcome["decision"] {
     if (tier1Results.some((r) => r.status === "fail")) return "auto_rejected";
-    if (tier1Results.some((r) => r.status === "unresolved")) return "needs_review";
-
-    // Tier 1 fully passed — but nothing can be auto_approved without Tier 2
-    // actually having run and agreed.
-    if (tier2Results === null) return "needs_review";
 
     // An "optional" source_video_match/source_audio_match item is still
     // evaluated and shown to a reviewer, but never gates the decision —
     // only required items (everything brief-derived, plus any "mandatory"
     // source-match item) can trigger auto_rejected/needs_review here.
-    const gating = tier2Results.filter((c) => c.required);
+    const gating = tier2Results?.filter((c) => c.required) ?? null;
 
-    const highConfidenceFail = gating.some(
-      (c) => !c.pass && c.confidence >= HIGH_CONFIDENCE_FAIL_THRESHOLD,
-    );
+    // A confident content mismatch is disqualifying on its own — checked
+    // before the tier1-unresolved case below on purpose. Ownership/resolves
+    // being unresolved (e.g. a transient Graph API lookup miss) must never
+    // let anything auto_approve — that's still enforced below, unchanged —
+    // but it's not a reason to withhold a reject that content alone already
+    // earns: rejecting never risks paying out on an unconfirmed ownership
+    // claim, so it doesn't need to wait on that gate the way approval does.
+    const highConfidenceFail =
+      gating?.some((c) => !c.pass && c.confidence >= HIGH_CONFIDENCE_FAIL_THRESHOLD) ?? false;
     if (highConfidenceFail) return "auto_rejected";
+
+    if (tier1Results.some((r) => r.status === "unresolved")) return "needs_review";
+
+    // Tier 1 fully passed — but nothing can be auto_approved without Tier 2
+    // actually having run and agreed.
+    if (gating === null) return "needs_review";
 
     const lowConfidence = gating.some((c) => c.confidence < LOW_CONFIDENCE_THRESHOLD);
     if (lowConfidence) return "needs_review";
