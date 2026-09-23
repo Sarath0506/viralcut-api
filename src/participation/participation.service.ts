@@ -1014,7 +1014,9 @@ export class ParticipationService {
     await this.notifications.create(deliverable.participation.creatorId, "creator", {
       type: "draft_rejected",
       title: "Draft needs changes",
-      body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes: ${trimmedReason}`,
+      // Full reason stays on rejectionReason, shown once the app is opened
+      // — push/WhatsApp/the notification list just need to flag it.
+      body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes. Open the app to see what needs fixing.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
@@ -1336,7 +1338,8 @@ export class ParticipationService {
     await this.notifications.create(deliverable.participation.creatorId, "creator", {
       type: "proof_rejected",
       title: "Proof rejected",
-      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected: ${reason}`,
+      // Full reason stays on rejectionReason, shown once the app is opened.
+      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected. Open the app for details.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
