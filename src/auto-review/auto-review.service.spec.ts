@@ -216,6 +216,69 @@ describe("AutoReviewService", () => {
       ).toBe("unresolved");
     });
 
+    it("auto_rejects on a confident content mismatch even while ownership is unresolved — rejecting never risks an unconfirmed-ownership payout", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        ...baseDeliverable,
+        draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
+      });
+      prisma.instagramConnection.findUnique.mockResolvedValue({
+        platformHandle: "creator",
+        platformUserId: "1",
+      });
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(
+          async () =>
+            new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
+        );
+      // Ownership can't be verified — the Graph API lookup found nothing,
+      // same shape as a live "could not find this post" case.
+      instagramOAuth.getOwnLivePostMedia.mockResolvedValue(null);
+      checklist.getOrCreateChecklist.mockResolvedValue([{ id: "c1", label: "matches brief", source: "brief" }]);
+      gemini.evaluateCompliance.mockResolvedValue([
+        { criterionId: "c1", label: "matches brief", pass: false, confidence: 0.95, reason: "off-brief content", required: true },
+      ]);
+
+      await service.runProofPipeline("deliverable-1");
+      fetchSpy.mockRestore();
+
+      const call = prisma.autoReviewResult.create.mock.calls[0][0];
+      expect(call.data.decision).toBe("auto_rejected");
+      // Confirms the reject happened despite — not because of — ownership
+      // still being unresolved, so this is genuinely testing the new path.
+      expect(
+        call.data.tier1Results.find((g: { gate: string }) => g.gate === "ownership_verified").status,
+      ).toBe("unresolved");
+    });
+
+    it("still needs_review (never auto_approved) when the checklist passes but ownership is unresolved", async () => {
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        ...baseDeliverable,
+        draftDriveUrl: "https://pub-example.r2.dev/creator-drafts/x.mp4",
+      });
+      prisma.instagramConnection.findUnique.mockResolvedValue({
+        platformHandle: "creator",
+        platformUserId: "1",
+      });
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(
+          async () =>
+            new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "video/mp4" } }),
+        );
+      instagramOAuth.getOwnLivePostMedia.mockResolvedValue(null);
+      checklist.getOrCreateChecklist.mockResolvedValue([{ id: "c1", label: "matches brief", source: "brief" }]);
+      gemini.evaluateCompliance.mockResolvedValue([
+        { criterionId: "c1", label: "matches brief", pass: true, confidence: 0.95, reason: "matches", required: true },
+      ]);
+
+      await service.runProofPipeline("deliverable-1");
+      fetchSpy.mockRestore();
+
+      const call = prisma.autoReviewResult.create.mock.calls[0][0];
+      expect(call.data.decision).toBe("needs_review");
+    });
+
     it("never compares draft-vs-live when there's no connection — resolves_and_public/ownership/draft_live_match all stay unresolved", async () => {
       prisma.formatDeliverable.findUnique.mockResolvedValue({
         ...baseDeliverable,
