@@ -107,6 +107,31 @@ describe("InAppNotificationService.create", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("uses whatsappBody instead of body for the WhatsApp send when both are set — the approved template already appends its own CTA", async () => {
+    const { service, prisma, whatsapp, push } = makeService();
+    prisma.notification.create.mockResolvedValue(savedNotification);
+    prisma.user.findUnique.mockResolvedValue({ phone: "+919876543210", displayName: "Ravi", username: null });
+
+    await service.create("user-1", "creator", {
+      type: "x",
+      title: "Hi",
+      body: "There — open the app for details.",
+      whatsappBody: "There.",
+      sendWhatsapp: true,
+    });
+
+    expect(whatsapp.sendGeneralUpdate).toHaveBeenCalledWith("+919876543210", {
+      recipientName: "Ravi",
+      title: "Hi",
+      message: "There.",
+    });
+    // Push and the stored notification still get the full body, unaffected.
+    expect(push.sendToUser).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ body: "There — open the app for details." }),
+    );
+  });
+
   it("falls back to the title as the WhatsApp message when there's no body", async () => {
     const { service, prisma, whatsapp } = makeService();
     prisma.notification.create.mockResolvedValue(savedNotification);

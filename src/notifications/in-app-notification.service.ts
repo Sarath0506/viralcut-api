@@ -18,6 +18,12 @@ type CreateNotificationInput = {
   // needs to know about right away (see the call sites that set it), not
   // every notification.create() call in the app.
   sendWhatsapp?: boolean;
+  // Overrides `body` for the WhatsApp send only — the approved general
+  // template already appends its own "Open the app to view details." after
+  // the message, so a body ending in "Open the app for details." (or
+  // similar) reads as a doubled-up CTA once it's inside that template.
+  // Defaults to `body` when omitted.
+  whatsappBody?: string;
 };
 
 function formatNotification(n: {
@@ -96,7 +102,7 @@ export class InAppNotificationService {
             await this.whatsapp.sendGeneralUpdate(recipient.phone, {
               recipientName: recipient.displayName ?? recipient.username ?? "there",
               title: input.title,
-              message: input.body ?? input.title,
+              message: input.whatsappBody ?? input.body ?? input.title,
             });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

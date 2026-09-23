@@ -1209,6 +1209,117 @@ describe("AutoReviewService", () => {
       expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
     });
 
+    it("auto_rejects a proof once retries are exhausted with ownership still unconfirmed, when enforcement is on", async () => {
+      build(true, true);
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "ownership-never-confirmed",
+            status: "proof_under_review",
+            livePostUrl: "https://www.instagram.com/reel/abc123/",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            _count: { autoReviewResults: 12 },
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                modelVersion: "gemini-2.5-flash",
+                tier2Results: [
+                  { criterionId: "c1", label: "logo shown", pass: true, confidence: 1, reason: "ok", required: true },
+                ],
+                tier1Results: [
+                  {
+                    gate: "resolves_and_public",
+                    status: "unresolved",
+                    reason: "Could not find this post on the connected account's own Instagram media",
+                  },
+                  { gate: "platform_match", status: "pass", reason: "matches" },
+                  {
+                    gate: "ownership_verified",
+                    status: "unresolved",
+                    reason: "Could not find this post on the connected account's own Instagram media — needs a human to check",
+                  },
+                  {
+                    gate: "draft_live_match",
+                    status: "unresolved",
+                    reason: "Could not compare draft and live content (unfetchable media, unsupported platform, or Tier 2 not configured)",
+                  },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+      prisma.formatDeliverable.findUnique.mockResolvedValue({
+        id: "ownership-never-confirmed",
+        status: "proof_under_review",
+        platform: "instagram_reel",
+        participation: {
+          id: "participation-1",
+          creatorId: "creator-1",
+          campaignId: "campaign-1",
+          campaign: { title: "Test Campaign", brandProfileId: "brand-1" },
+        },
+      });
+      prisma.formatDeliverable.update.mockResolvedValue({ status: "proof_rejected", platform: "instagram_reel" });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "ownership-never-confirmed" },
+          data: expect.objectContaining({
+            status: "proof_rejected",
+            rejectionReason: expect.stringContaining("Could not verify this post belongs to your connected account"),
+          }),
+        }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        "creator-1",
+        "creator",
+        expect.objectContaining({ type: "proof_rejected" }),
+      );
+      // Never re-runs the check — this applies a final decision from the
+      // already-exhausted retry history, it doesn't attempt attempt #13.
+      expect(instagramOAuth.getOwnLivePostMedia).not.toHaveBeenCalled();
+    });
+
+    it("does NOT auto_reject an exhausted ownership-unconfirmed proof when enforcement is off — shadow mode never changes status", async () => {
+      // build()'s default from beforeEach already has enforceEnabled: false.
+      prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
+        if (!where.autoReviewResults?.some) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            id: "ownership-never-confirmed-shadow",
+            status: "proof_under_review",
+            livePostUrl: "https://www.instagram.com/reel/abc123/",
+            draftSubmittedAt: null,
+            liveSubmittedAt: new Date("2026-01-01T08:00:00Z"),
+            _count: { autoReviewResults: 12 },
+            autoReviewResults: [
+              {
+                decision: "needs_review",
+                tier2Results: null,
+                tier1Results: [
+                  {
+                    gate: "ownership_verified",
+                    status: "unresolved",
+                    reason: "Could not find this post on the connected account's own Instagram media",
+                  },
+                ],
+              },
+            ],
+          },
+        ]);
+      });
+
+      await service.catchUpMissedAutoReviews();
+
+      expect(prisma.formatDeliverable.update).not.toHaveBeenCalled();
+      expect(prisma.formatDeliverable.findUnique).not.toHaveBeenCalled();
+    });
+
     it("retries a proof stuck on needs_review when draft_live_match is the only unresolved gate and ownership is verified", async () => {
       prisma.formatDeliverable.findMany.mockImplementation(({ where }: any) => {
         if (!where.autoReviewResults?.some) return Promise.resolve([]);

@@ -346,6 +346,53 @@ export class AutoReviewService {
           outcome: undefined as AutoReviewOutcome | undefined,
         }));
 
+      // Retries exhausted (the MAX_STUCK_RETRIES branch above) AND the
+      // reason is specifically that ownership was never confirmed — not
+      // format_match (an unfetchable file is a different kind of problem
+      // with no ownership question at all) and not a genuine tier1 "fail"
+      // (that auto_rejects immediately on its own, long before ever
+      // reaching this cap — see decide()). Auto-rejects instead of leaving
+      // it for a human to look at: a confirmed-transient signal (the retry
+      // budget) has already been exhausted, so at this point "still can't
+      // verify this is really theirs" is the answer, not "wait longer."
+      // Gated on enforceEnabled like unenforcedDecidedQueue below — in
+      // shadow mode this must never actually change a deliverable's status.
+      const expiredUnverifiedOwnershipQueue = !this.enforceEnabled ? [] : stuckCandidates
+        .filter((d) => {
+          const latest = d.autoReviewResults[0];
+          if (!latest || latest.decision !== "needs_review") return false;
+          if ((d._count?.autoReviewResults ?? 0) < MAX_STUCK_RETRIES) return false;
+          const tier1 = latest.tier1Results as GateResult[] | null;
+          if (!Array.isArray(tier1)) return false;
+          if (tier1.some((g) => g.status === "fail")) return false;
+          return tier1.some((g) => g.gate === "ownership_verified" && g.status === "unresolved");
+        })
+        .map((d) => {
+          const latest = d.autoReviewResults[0];
+          const tier1 = latest.tier1Results as GateResult[];
+          const finalTier1 = tier1.map((g) =>
+            g.gate === "ownership_verified"
+              ? {
+                  gate: g.gate,
+                  status: "fail" as const,
+                  reason:
+                    "Could not verify this post belongs to your connected account after several automatic checks — double-check the right Instagram account is connected, then resubmit.",
+                }
+              : g,
+          );
+          return {
+            id: d.id,
+            stage: (d.status === FormatDeliverableStatus.under_review ? "draft" : "proof") as "draft" | "proof",
+            submittedAt: d.status === FormatDeliverableStatus.under_review ? d.draftSubmittedAt! : d.liveSubmittedAt!,
+            outcome: {
+              decision: "auto_rejected",
+              tier1Results: finalTier1,
+              tier2Results: latest.tier2Results as CriterionResult[] | null,
+              modelVersion: latest.modelVersion,
+            } as AutoReviewOutcome,
+          };
+        });
+
       // Gap #5, enforcement-only: a confident auto_approved/auto_rejected
       // decision that was computed while AUTO_REVIEW_ENFORCE_ENABLED was
       // off (shadow mode) and never got applied — the deliverable is still
@@ -388,6 +435,7 @@ export class AutoReviewService {
         ...proofBacklog.map((d) => ({ id: d.id, stage: "proof" as const, submittedAt: d.liveSubmittedAt!, outcome: undefined as AutoReviewOutcome | undefined })),
         ...stuckQueue,
         ...unenforcedDecidedQueue,
+        ...expiredUnverifiedOwnershipQueue,
       ]
         .sort((a, b) => a.submittedAt.getTime() - b.submittedAt.getTime())
         .slice(0, maxPerRun);
@@ -518,6 +566,9 @@ export class AutoReviewService {
       // once opened — push/WhatsApp/the notification list itself only need
       // enough to tell the creator something needs their attention.
       body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes. Open the app to see what needs fixing.`,
+      // No "open the app" here — the approved WhatsApp template already
+      // appends its own "Open the app to view details." after this.
+      whatsappBody: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
@@ -604,6 +655,8 @@ export class AutoReviewService {
       // See the draft_rejected notification above — full reason stays on
       // rejectionReason/autoReview, shown once the app is opened.
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected. Open the app for details.`,
+      // No "open the app" — the WhatsApp template already appends that.
+      whatsappBody: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
