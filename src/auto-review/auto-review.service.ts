@@ -34,7 +34,9 @@ const LOW_CONFIDENCE_THRESHOLD = 0.7;
 // up and leaves it for a human. Long enough for any real transient hiccup
 // (a Gemini blip, a momentary R2/Graph API failure) to clear on its own;
 // short enough that a genuinely broken submission doesn't run forever.
-const MAX_STUCK_RETRIES = 12;
+// Exported so the brand-facing API can tell a client "attempt N of this many"
+// without a second, driftable copy of the same number.
+export const MAX_STUCK_RETRIES = 12;
 
 const PLATFORM_LABELS: Record<string, string> = {
   instagram_reel: "Instagram Reel",
@@ -511,7 +513,11 @@ export class AutoReviewService {
     await this.notifications.create(deliverable.participation.creatorId, "creator", {
       type: "draft_rejected",
       title: "Draft needs changes",
-      body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes: ${reason}`,
+      // Full reason (the AI's whole checklist breakdown, or an admin's
+      // note) stays on rejectionReason/autoReview and is what the app shows
+      // once opened — push/WhatsApp/the notification list itself only need
+      // enough to tell the creator something needs their attention.
+      body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes. Open the app to see what needs fixing.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
@@ -595,7 +601,9 @@ export class AutoReviewService {
     await this.notifications.create(deliverable.participation.creatorId, "creator", {
       type: "proof_rejected",
       title: "Proof rejected",
-      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected: ${reason}`,
+      // See the draft_rejected notification above — full reason stays on
+      // rejectionReason/autoReview, shown once the app is opened.
+      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected. Open the app for details.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });

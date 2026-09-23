@@ -15,7 +15,7 @@ import {
 } from "@prisma/client";
 
 import { ActivityLogService } from "../activity/activity-log.service";
-import { AutoReviewService } from "../auto-review/auto-review.service";
+import { AutoReviewService, MAX_STUCK_RETRIES } from "../auto-review/auto-review.service";
 import { CampaignAccessService } from "../access/campaign-access.service";
 import { normalizeCampaignPlatforms } from "../campaigns/campaign-platforms";
 import { ApifyService, type PlatformViewResult } from "../common/apify.service";
@@ -880,6 +880,11 @@ export class ParticipationService {
         modelVersion: r.modelVersion,
         createdAt: r.createdAt.toISOString(),
       })),
+      // Lets the client tell "still retrying" apart from "gave up" — the
+      // catch-up sweep stops once a stage's attempt count reaches this, so a
+      // needs_review result short of it is still actively being worked, not
+      // stalled.
+      autoReviewMaxRetries: MAX_STUCK_RETRIES,
     };
   }
 
@@ -1009,7 +1014,9 @@ export class ParticipationService {
     await this.notifications.create(deliverable.participation.creatorId, "creator", {
       type: "draft_rejected",
       title: "Draft needs changes",
-      body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes: ${trimmedReason}`,
+      // Full reason stays on rejectionReason, shown once the app is opened
+      // — push/WhatsApp/the notification list just need to flag it.
+      body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes. Open the app to see what needs fixing.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
@@ -1331,7 +1338,8 @@ export class ParticipationService {
     await this.notifications.create(deliverable.participation.creatorId, "creator", {
       type: "proof_rejected",
       title: "Proof rejected",
-      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected: ${reason}`,
+      // Full reason stays on rejectionReason, shown once the app is opened.
+      body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected. Open the app for details.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });

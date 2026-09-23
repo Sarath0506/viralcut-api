@@ -83,9 +83,14 @@ export class CreateCampaignDto {
   @IsEnum(CampaignStatus)
   status?: CampaignStatus;
 
+  // Empty allowed here on purpose — the wizard creates this row the moment
+  // "Create campaign" is clicked, before the admin has typed a real name.
+  // No MinLength(1): forcing a placeholder like "New Campaign" in to satisfy
+  // this validator is exactly what let untouched campaigns keep that name
+  // forever. The Basics step's own Next-button gate (not this DTO) is what
+  // actually requires a real title before the wizard can proceed.
   @ApiProperty()
   @IsString()
-  @MinLength(1)
   @MaxLength(120)
   title!: string;
 
