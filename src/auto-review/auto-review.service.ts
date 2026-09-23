@@ -566,6 +566,9 @@ export class AutoReviewService {
       // once opened — push/WhatsApp/the notification list itself only need
       // enough to tell the creator something needs their attention.
       body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes. Open the app to see what needs fixing.`,
+      // No "open the app" here — the approved WhatsApp template already
+      // appends its own "Open the app to view details." after this.
+      whatsappBody: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
@@ -652,6 +655,8 @@ export class AutoReviewService {
       // See the draft_rejected notification above — full reason stays on
       // rejectionReason/autoReview, shown once the app is opened.
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected. Open the app for details.`,
+      // No "open the app" — the WhatsApp template already appends that.
+      whatsappBody: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });

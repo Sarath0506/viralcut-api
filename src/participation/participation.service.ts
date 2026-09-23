@@ -1017,6 +1017,8 @@ export class ParticipationService {
       // Full reason stays on rejectionReason, shown once the app is opened
       // — push/WhatsApp/the notification list just need to flag it.
       body: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes. Open the app to see what needs fixing.`,
+      // No "open the app" — the WhatsApp template already appends that.
+      whatsappBody: `Your ${formatPlatform(updated.platform)} draft for ${deliverable.participation.campaign.title} needs changes.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
@@ -1340,6 +1342,8 @@ export class ParticipationService {
       title: "Proof rejected",
       // Full reason stays on rejectionReason, shown once the app is opened.
       body: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected. Open the app for details.`,
+      // No "open the app" — the WhatsApp template already appends that.
+      whatsappBody: `Your live ${formatPlatform(updated.platform)} post for ${deliverable.participation.campaign.title} was rejected.`,
       link: `/participations/${deliverable.participation.id}`,
       sendWhatsapp: true,
     });
