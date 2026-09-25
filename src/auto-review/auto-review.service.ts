@@ -84,6 +84,7 @@ function buildAutoRejectionReason(
   const lines: string[] = [];
   for (const gate of tier1Results) {
     if (gate.status === "fail") lines.push(`✗ ${gate.reason}`);
+    else if (gate.status === "pass") lines.push(`✓ ${gate.reason}`);
   }
 
   let failedCount = tier1Results.filter((g) => g.status === "fail").length;

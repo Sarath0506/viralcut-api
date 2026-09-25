@@ -1598,7 +1598,17 @@ export class ParticipationService {
         FormatDeliverableStatus.proof_approved,
       ];
       const deliverables = await this.prisma.formatDeliverable.findMany({
-        where: { status: { in: trackableStatuses }, livePostUrl: { not: null } },
+        where: {
+          status: { in: trackableStatuses },
+          livePostUrl: { not: null },
+          // A deliverable can sit in proof_approved indefinitely (that
+          // status doesn't change on payout — see paidAt), so once its
+          // campaign closes there's nothing left keeping this scoped to
+          // "actually active" without this — otherwise it's swept forever,
+          // still burning Instagram Insights/Apify calls for a campaign
+          // nobody's watching anymore.
+          participation: { campaign: { status: { not: CampaignStatus.closed } } },
+        },
         include: { participation: { include: { campaign: true } } },
       });
       if (deliverables.length === 0) return;
