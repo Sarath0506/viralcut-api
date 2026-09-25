@@ -1071,6 +1071,22 @@ describe("ParticipationService", () => {
       vi.useRealTimers();
     }
 
+    it("excludes closed campaigns from the sweep query — a deliverable can sit in proof_approved forever, so without this it keeps burning Instagram/Apify calls after the campaign is done", async () => {
+      prisma.formatDeliverable.findMany.mockResolvedValue([]);
+
+      await runSweepWithFakeTimers();
+
+      expect(prisma.formatDeliverable.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            participation: expect.objectContaining({
+              campaign: { status: { not: CampaignStatus.closed } },
+            }),
+          }),
+        }),
+      );
+    });
+
     it("does nothing when there are no trackable deliverables", async () => {
       prisma.formatDeliverable.findMany.mockResolvedValue([]);
 
