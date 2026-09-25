@@ -331,3 +331,127 @@ describe("InstagramOAuthService.getOwnLivePostMedia", () => {
     expect(result).toBeNull();
   });
 });
+
+function makeCompleteConfig() {
+  const values: Record<string, string> = {
+    INSTAGRAM_GRAPH_API_VERSION: "v23.0",
+    INSTAGRAM_TOKEN_ENCRYPTION_KEY: "test-encryption-key-not-a-real-secret",
+    INSTAGRAM_APP_ID: "test-app-id",
+    INSTAGRAM_APP_SECRET: "test-app-secret",
+    INSTAGRAM_REDIRECT_URI: "https://example.com/callback",
+    INSTAGRAM_OAUTH_SCOPES: "instagram_business_basic",
+  };
+  return { get: vi.fn((key: string) => values[key]) };
+}
+
+describe("InstagramOAuthService.complete", () => {
+  const USER_ID = "user-1";
+  const PROFILE_ID = "profile-1";
+  const TRANSACTION_ID = "tx-1";
+
+  let prisma: {
+    instagramOAuthTransaction: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+    instagramConnection: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
+    creatorProfile: { findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+    user: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+    $transaction: ReturnType<typeof vi.fn>;
+  };
+  let profiles: { assertOwnership: ReturnType<typeof vi.fn> };
+  let service: InstagramOAuthService;
+
+  function oauthTransaction(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "oauth-tx-row-1",
+      transactionId: TRANSACTION_ID,
+      userId: USER_ID,
+      creatorProfileId: PROFILE_ID,
+      status: "ready",
+      encryptedAccessToken: "encrypted-token",
+      expiresAt: new Date(Date.now() + 60_000),
+      tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      dataAccessExpiresAt: null,
+      completedAt: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    profiles = { assertOwnership: vi.fn().mockResolvedValue(undefined) };
+    prisma = {
+      instagramOAuthTransaction: { findUnique: vi.fn(), update: vi.fn() },
+      instagramConnection: { findUnique: vi.fn(), findFirst: vi.fn(), upsert: vi.fn() },
+      creatorProfile: { findFirst: vi.fn().mockResolvedValue({ socialLinks: {}, socialStats: {} }), update: vi.fn() },
+      user: { findUnique: vi.fn().mockResolvedValue({ instagramReviewStatus: "verified" }), update: vi.fn() },
+      $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prisma)),
+    };
+    service = new InstagramOAuthService(prisma as never, profiles as never, makeCompleteConfig() as never);
+    // decrypt/fetchProfileAndMedia hit real crypto / the live Instagram Graph
+    // API respectively — stub both so these tests exercise complete()'s own
+    // logic (the new cross-user conflict check, specifically) rather than
+    // those.
+    vi.spyOn(service as unknown as { decrypt(v: string): string }, "decrypt").mockReturnValue("real-token");
+    vi.spyOn(
+      service as unknown as { fetchProfileAndMedia(token: string): Promise<Record<string, unknown>> },
+      "fetchProfileAndMedia",
+    ).mockResolvedValue({
+      igUserId: "ig-user-999",
+      username: "shared_handle",
+      displayName: null,
+      followerCount: 100,
+      followsCount: 10,
+      mediaCount: 5,
+      profilePictureUrl: null,
+      accountType: null,
+      biography: null,
+      website: null,
+      engagementRate: 0,
+      avgLikes: 0,
+      avgComments: 0,
+      topPosts: [],
+      fetchedAt: new Date().toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("blocks completion when another creator profile already has this Instagram account actively connected", async () => {
+    prisma.instagramOAuthTransaction.findUnique.mockResolvedValue(oauthTransaction());
+    prisma.instagramConnection.findFirst.mockResolvedValue({ id: "some-other-connection-row" });
+
+    await expect(service.complete(USER_ID, PROFILE_ID, TRANSACTION_ID)).rejects.toMatchObject({
+      response: { code: "INSTAGRAM_ACCOUNT_ALREADY_LINKED" },
+    });
+    expect(prisma.instagramConnection.upsert).not.toHaveBeenCalled();
+  });
+
+  it("queries the conflict check by the stable platformUserId, excluding this profile's own row", async () => {
+    prisma.instagramOAuthTransaction.findUnique.mockResolvedValue(oauthTransaction());
+    prisma.instagramConnection.findFirst.mockResolvedValue(null);
+
+    await service.complete(USER_ID, PROFILE_ID, TRANSACTION_ID);
+
+    expect(prisma.instagramConnection.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          platformUserId: "ig-user-999",
+          isConnected: true,
+          NOT: { creatorProfileId: PROFILE_ID },
+        }),
+      }),
+    );
+  });
+
+  it("completes normally when no other profile has this Instagram account connected", async () => {
+    prisma.instagramOAuthTransaction.findUnique.mockResolvedValue(oauthTransaction());
+    prisma.instagramConnection.findFirst.mockResolvedValue(null);
+
+    const result = await service.complete(USER_ID, PROFILE_ID, TRANSACTION_ID);
+
+    expect(result).toMatchObject({ connected: true, handle: "shared_handle" });
+    expect(prisma.instagramConnection.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { creatorProfileId: PROFILE_ID } }),
+    );
+  });
+});
