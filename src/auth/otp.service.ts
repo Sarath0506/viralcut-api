@@ -14,6 +14,12 @@ import { PrismaService } from "../prisma/prisma.service";
 import { WhatsappService } from "../notifications/whatsapp.service";
 import { FixedOtpService } from "./fixed-otp.service";
 
+// See requestOtp's own comment for why these exist — free resends up to
+// this count, then a cooldown between each request after that.
+const ATTEMPTS_BEFORE_COOLDOWN = 3;
+const ATTEMPT_WINDOW_MS = 30 * 60_000;
+const RESEND_COOLDOWN_MS = 60_000;
+
 @Injectable()
 export class OtpService {
   private readonly logger = new Logger(OtpService.name);
@@ -27,23 +33,33 @@ export class OtpService {
 
   async requestOtp(rawPhone: string): Promise<{ expiresInSeconds: number }> {
     const phone = normalizePhone(rawPhone);
-    const recent = await this.prisma.otpSession.count({
-      where: {
-        phone,
-        createdAt: { gte: new Date(Date.now() - 60_000) },
-      },
-    });
-    if (recent >= 1) {
-      throw new HttpException(
-        {
-          code: "RATE_LIMITED",
-          message: "Wait before requesting another OTP",
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
 
-    await this.prisma.otpSession.deleteMany({ where: { phone } });
+    // The first few resends go through instantly — a creator mistyping
+    // their number or not getting the WhatsApp message right away
+    // shouldn't be stuck waiting on a cooldown that only matters once this
+    // actually looks like spam. Only once ATTEMPTS_BEFORE_COOLDOWN requests
+    // have already landed in ATTEMPT_WINDOW_MS does the old 60s
+    // between-requests wait kick in. Old sessions are deliberately not
+    // deleted here (only their codes go stale, superseded by the newest
+    // row — see verifyOtp, which only ever reads the latest one) so this
+    // count stays accurate across resends within the window.
+    const recentSessions = await this.prisma.otpSession.findMany({
+      where: { phone, createdAt: { gte: new Date(Date.now() - ATTEMPT_WINDOW_MS) } },
+      orderBy: { createdAt: "desc" },
+      take: ATTEMPTS_BEFORE_COOLDOWN,
+    });
+    if (recentSessions.length >= ATTEMPTS_BEFORE_COOLDOWN) {
+      const msSinceLast = Date.now() - recentSessions[0].createdAt.getTime();
+      if (msSinceLast < RESEND_COOLDOWN_MS) {
+        throw new HttpException(
+          {
+            code: "RATE_LIMITED",
+            message: "Wait before requesting another OTP",
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
 
     const fixedCode = await this.fixedOtp.getFixedCodeForPhone(phone);
     const code = fixedCode ?? randomInt(100_000, 999_999).toString();
