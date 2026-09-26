@@ -309,6 +309,28 @@ export class InstagramOAuthService {
       const currentStats =
         (profile.socialStats as Record<string, unknown> | null) ?? {};
 
+      // platformUserId is Instagram's stable numeric account ID (not the
+      // @handle, which the Instagram user can rename) — the only thing
+      // safe to compare across users. Without this, nothing (app code or
+      // the DB schema — creatorProfileId is @unique on this table, but
+      // platformUserId isn't) stops the same Instagram account from being
+      // connected to two different Halchal users at once.
+      const conflicting = await tx.instagramConnection.findFirst({
+        where: {
+          platformUserId: insights.igUserId,
+          isConnected: true,
+          NOT: { creatorProfileId },
+        },
+        select: { id: true },
+      });
+      if (conflicting) {
+        throw new ConflictException({
+          code: "INSTAGRAM_ACCOUNT_ALREADY_LINKED",
+          message:
+            "This Instagram account is already connected to another Halchal account.",
+        });
+      }
+
       await tx.instagramConnection.upsert({
         where: { creatorProfileId },
         create: {
